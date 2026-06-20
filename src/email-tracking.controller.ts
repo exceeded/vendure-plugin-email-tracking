@@ -1,5 +1,12 @@
 import { Body, Controller, Delete, Get, Param, Post, Query, Req, Res } from '@nestjs/common';
 import { Ctx, Logger, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
+import {
+    applySecurityHeaders,
+    isUrlOnAllowlist,
+    RateLimiter,
+    verifyHmacSha256,
+    verifySignedValue,
+} from '@huloglobal/vendure-licence-sdk';
 import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
@@ -8,6 +15,18 @@ import { EmailTrackingPlugin } from './plugin';
 import { getOptions, getLicenceStatus } from './options';
 
 const loggerCtx = 'EmailTrackingController';
+
+/** Process-wide rate limiter shared across all open / click / bounce
+ *  requests. Sized to comfortably handle a normal store's traffic while
+ *  blocking floods. Configurable via plugin options. */
+let limiter: RateLimiter | null = null;
+function getLimiter(): RateLimiter {
+    if (!limiter) {
+        const rl = getOptions().rateLimit || { capacity: 60, windowMs: 60_000 };
+        limiter = new RateLimiter({ capacity: rl.capacity, windowMs: rl.windowMs });
+    }
+    return limiter;
+}
 
 // 1×1 transparent GIF (43 bytes) returned by the open-tracking endpoint.
 const ONE_PX_GIF = Buffer.from(
@@ -66,17 +85,29 @@ export class EmailTrackingController {
      *
      * GET /email-track/open/:id.gif
      */
-    @Get('open/:id.gif')
-    async open(@Param('id') idParam: string, @Req() req: Request, @Res() res: Response) {
-        const id = parseInt(idParam, 10);
-        if (!isNaN(id) && id > 0) {
-            this.tracking.recordOpen(id, realIp(req), req.headers['user-agent'] as string || null)
+    @Get('open/:token.gif')
+    async open(@Param('token') token: string, @Req() req: Request, @Res() res: Response) {
+        const ip = realIp(req);
+        // Rate limit per IP so an attacker can't inflate open counts at
+        // scale by hammering the pixel.
+        if (ip && !getLimiter().allow(`open|${ip}`)) {
+            res.status(429).setHeader('Retry-After', '60');
+            return res.end();
+        }
+
+        const id = this.resolveSignedId(token);
+        if (id !== null) {
+            this.tracking.recordOpen(id, ip, req.headers['user-agent'] as string || null)
                 .catch((e: any) => Logger.warn(`open log fail #${id}: ${e?.message}`, loggerCtx));
         }
+        // Always return the pixel — never leak whether the id was real
+        // or the signature was valid. Privacy-protecting clients and bots
+        // get the same response as real opens.
         res.setHeader('Content-Type', 'image/gif');
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
+        applySecurityHeaders(res);
         return res.end(ONE_PX_GIF);
     }
 
@@ -87,19 +118,53 @@ export class EmailTrackingController {
      *
      * GET /email-track/click/:id?u=<encoded>
      */
-    @Get('click/:id')
-    async click(@Param('id') idParam: string, @Query('u') u: string, @Req() req: Request, @Res() res: Response) {
-        const id = parseInt(idParam, 10);
+    @Get('click/:token')
+    async click(@Param('token') token: string, @Query('u') u: string, @Req() req: Request, @Res() res: Response) {
+        const ip = realIp(req);
+        if (ip && !getLimiter().allow(`click|${ip}`)) {
+            res.setHeader('Retry-After', '60');
+            return res.status(429).send('Too many requests');
+        }
+
         const url = (u || '').trim();
-        if (!url || !/^https?:\/\//i.test(url)) {
+        const opts = getOptions();
+        // Defence in depth: reject non-http(s) and any host that isn't on
+        // the allowlist when one is configured. Stops the redirector
+        // being abused as an open redirector.
+        if (!isUrlOnAllowlist(url, opts.clickRedirectAllowedDomains || [])) {
+            applySecurityHeaders(res);
             return res.status(400).send('Invalid redirect target');
         }
-        if (!isNaN(id) && id > 0) {
-            await this.tracking.recordClick(id, url, realIp(req), req.headers['user-agent'] as string || null)
+
+        const id = this.resolveSignedId(token);
+        if (id !== null) {
+            await this.tracking.recordClick(id, url, ip, req.headers['user-agent'] as string || null)
                 .catch((e: any) => Logger.warn(`click log fail #${id}: ${e?.message}`, loggerCtx));
         }
         res.setHeader('Cache-Control', 'no-store');
+        applySecurityHeaders(res);
         return res.redirect(302, url);
+    }
+
+    /**
+     * Resolve a path parameter back to a numeric email-log id.
+     *
+     * If a `signingSecret` is configured, we expect a token of the form
+     * `<id>.<hmac>`. If no secret is configured, we accept a bare
+     * numeric id (legacy behaviour) — but still parse strictly so a
+     * malicious caller can't slip a path traversal in.
+     */
+    private resolveSignedId(raw: string): number | null {
+        if (!raw) return null;
+        const secret = getOptions().signingSecret;
+        if (secret) {
+            const value = verifySignedValue(raw, secret);
+            if (!value) return null;
+            const id = parseInt(value, 10);
+            return isFinite(id) && id > 0 ? id : null;
+        }
+        const id = parseInt(raw, 10);
+        return isFinite(id) && id > 0 ? id : null;
     }
 
     /**
@@ -116,11 +181,41 @@ export class EmailTrackingController {
      * public internet (it's fine on a private network).
      */
     @Post('bounce')
-    async bounce(@Body() body: any, @Res() res: Response) {
+    async bounce(@Body() body: any, @Req() req: Request, @Res() res: Response) {
+        applySecurityHeaders(res, { strict: true });
+
+        // Webhook authentication: when a secret is configured, every
+        // request MUST carry a valid X-Signature header. Without a
+        // secret the endpoint accepts unauthenticated POSTs (legacy
+        // behaviour — strongly recommend setting bounceWebhookSecret in
+        // production).
+        const opts = getOptions();
+        const secret = opts.bounceWebhookSecret || opts.signingSecret;
+        if (secret) {
+            const sig = (req.headers['x-signature'] as string)
+                || (req.headers['x-hub-signature-256'] as string)
+                || '';
+            // Use rawBody if available; otherwise reconstruct from the
+            // parsed body. Vendure mounts `express.json()` globally so
+            // rawBody isn't preserved by default — recommend wiring it
+            // for /email-track/bounce specifically. The reconstructed
+            // form is consistent enough for HMAC if the sender uses
+            // canonical JSON.
+            const payload = (req as any).rawBody
+                ? (req as any).rawBody
+                : Buffer.from(JSON.stringify(body || {}));
+            if (!verifyHmacSha256(payload, sig, secret)) {
+                return res.status(401).json({ error: 'Invalid signature' });
+            }
+        }
+
         const messageId = String(body?.messageId || '').trim();
+        if (!messageId || messageId.length > 500) {
+            return res.status(400).json({ error: 'messageId required' });
+        }
         const status = body?.status === 'complained' ? 'complained' : 'bounced';
-        if (!messageId) return res.status(400).json({ error: 'messageId required' });
-        const ok = await this.tracking.recordBounce(messageId, status, body?.reason);
+        const reason = body?.reason ? String(body.reason).slice(0, 2000) : undefined;
+        const ok = await this.tracking.recordBounce(messageId, status, reason);
         return res.json({ ok, matched: ok });
     }
 

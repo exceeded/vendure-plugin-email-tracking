@@ -33,8 +33,8 @@ interface EmailDetail extends EmailRow {
     smtpMessageId: string | null;
     firstOpenIp: string | null;
     firstOpenUserAgent: string | null;
-    clicks: Array<{ url: string; ts: string; ip: string | null; ua: string | null }>;
-    opens: Array<{ ts: string; ip: string | null; ua: string | null }>;
+    clicks: Array<{ url: string; ts: string; ip: string | null; ua: string | null; country?: string | null; region?: string | null; city?: string | null }>;
+    opens: Array<{ ts: string; ip: string | null; ua: string | null; client?: string | null; platform?: string | null; isBot?: boolean; country?: string | null; region?: string | null; city?: string | null }>;
 }
 
 @Component({
@@ -188,11 +188,20 @@ interface EmailDetail extends EmailRow {
                                         </div>
                                         <h5 style="margin-top:18px" *ngIf="detail.opens && detail.opens.length > 0">Open history ({{ detail.openCount }})</h5>
                                         <table class="table table-compact" *ngIf="detail.opens && detail.opens.length > 0">
-                                            <thead><tr><th style="width:160px">Time</th><th style="width:140px">IP</th><th>User-Agent</th></tr></thead>
+                                            <thead><tr><th style="width:160px">Time</th><th style="width:140px">Location</th><th style="width:160px">Client</th><th>User-Agent</th></tr></thead>
                                             <tbody>
                                                 <tr *ngFor="let o of detail.opens">
                                                     <td>{{ o.ts | date:'medium' }}</td>
-                                                    <td style="font-family:monospace;font-size:11px">{{ o.ip || '—' }}</td>
+                                                    <td>
+                                                        <span *ngIf="o.country || o.city">
+                                                            {{ o.city || '' }}{{ o.city && o.region ? ', ' : '' }}{{ o.region || '' }}{{ (o.city || o.region) && o.country ? ' · ' : '' }}{{ o.country || '' }}
+                                                        </span>
+                                                        <span *ngIf="!o.country && !o.city" style="color:var(--color-component-color-300)">—</span>
+                                                    </td>
+                                                    <td style="font-size:11px">
+                                                        <span *ngIf="o.client">{{ o.client }}<span *ngIf="o.platform"> · {{ o.platform }}</span></span>
+                                                        <span *ngIf="o.isBot" style="display:inline-block;margin-left:4px;padding:1px 5px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:10px;font-weight:600;text-transform:uppercase">bot</span>
+                                                    </td>
                                                     <td style="font-size:11px;color:var(--color-component-color-300)">{{ o.ua || '—' }}</td>
                                                 </tr>
                                             </tbody>
@@ -203,12 +212,17 @@ interface EmailDetail extends EmailRow {
 
                                         <h5 style="margin-top:18px" *ngIf="detail.clicks.length > 0">Click history ({{ detail.clickCount }})</h5>
                                         <table class="table table-compact" *ngIf="detail.clicks.length > 0">
-                                            <thead><tr><th style="width:160px">Time</th><th>URL</th><th style="width:140px">IP</th><th>User-Agent</th></tr></thead>
+                                            <thead><tr><th style="width:160px">Time</th><th>URL</th><th style="width:140px">Location</th><th>User-Agent</th></tr></thead>
                                             <tbody>
                                                 <tr *ngFor="let c of detail.clicks">
                                                     <td>{{ c.ts | date:'medium' }}</td>
-                                                    <td style="font-family:monospace;font-size:11px;word-break:break-all"><a [href]="c.url" target="_blank">{{ c.url }}</a></td>
-                                                    <td style="font-family:monospace;font-size:11px">{{ c.ip || '—' }}</td>
+                                                    <td style="font-family:monospace;font-size:11px;word-break:break-all"><a [href]="c.url" target="_blank" rel="noopener">{{ c.url }}</a></td>
+                                                    <td>
+                                                        <span *ngIf="c.country || c.city">
+                                                            {{ c.city || '' }}{{ c.city && c.region ? ', ' : '' }}{{ c.region || '' }}{{ (c.city || c.region) && c.country ? ' · ' : '' }}{{ c.country || '' }}
+                                                        </span>
+                                                        <span *ngIf="!c.country && !c.city" style="color:var(--color-component-color-300)">—</span>
+                                                    </td>
                                                     <td style="font-size:11px;color:var(--color-component-color-300)">{{ c.ua || '—' }}</td>
                                                 </tr>
                                             </tbody>

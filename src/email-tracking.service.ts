@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { hashIp, signValue, startRetentionSweeper } from '@huloglobal/vendure-licence-sdk';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import * as nodemailer from 'nodemailer';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
-import { ownTrackingPrefixes, trackingBaseUrl } from './options';
+import { lookupGeo } from './geo-lookup';
+import { getOptions, ownTrackingPrefixes, trackingBaseUrl } from './options';
 import { parseEmailClient } from './parse-ua';
 
 const loggerCtx = 'EmailTrackingService';
@@ -23,8 +25,28 @@ interface SendTrackedMeta {
 }
 
 @Injectable()
-export class EmailTrackingService {
+export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDestroy {
+    private stopRetention: (() => void) | null = null;
+
     constructor(private connection: TransactionalConnection) {}
+
+    /** Called by Nest after every provider is initialised. Safe place to
+     *  start background sweepers that need DB access. */
+    onApplicationBootstrap(): void {
+        const opts = getOptions();
+        if (!opts.retention) return;
+        this.stopRetention = startRetentionSweeper({
+            getConnection: () => this.connection.rawConnection,
+            table: 'email_log',
+            options: opts.retention,
+            label: 'email-tracking',
+        });
+    }
+
+    onModuleDestroy(): void {
+        this.stopRetention?.();
+        this.stopRetention = null;
+    }
 
     /**
      * Send an email through nodemailer with full tracking: creates an
@@ -117,46 +139,66 @@ export class EmailTrackingService {
     /** Wrap an HTML body for tracking: rewrite links + append open pixel. */
     wrapHtml(html: string, eventId: number): string {
         const base = trackingBaseUrl();
-        const trackedHtml = this.rewriteLinks(html, eventId, base);
-        const pixel = `<img src="${base}/email-track/open/${eventId}.gif" width="1" height="1" alt="" border="0" style="display:none;border:0;max-height:1px;max-width:1px;outline:none;overflow:hidden;visibility:hidden">`;
-        // Insert the pixel just before </body> if possible, otherwise append.
+        const token = this.tokenForId(eventId);
+        const trackedHtml = this.rewriteLinks(html, token, base);
+        const pixel = `<img src="${base}/email-track/open/${token}.gif" width="1" height="1" alt="" border="0" style="display:none;border:0;max-height:1px;max-width:1px;outline:none;overflow:hidden;visibility:hidden">`;
         if (/<\/body>/i.test(trackedHtml)) {
             return trackedHtml.replace(/<\/body>/i, `${pixel}</body>`);
         }
         return trackedHtml + pixel;
     }
 
-    /** Rewrite every <a href> in the html to go through the click tracker.
-     *  Skips mailto:, tel:, #anchors, our own tracking endpoints, and the
-     *  unsubscribe link (always passthrough). */
-    private rewriteLinks(html: string, eventId: number, base: string): string {
+    /** Build the URL path token for an email-log id. When a
+     *  `signingSecret` is configured, the token is `<id>.<hmac>` so the
+     *  controller can verify nobody forged a URL. Without a secret we
+     *  fall back to the bare id (legacy behaviour). */
+    private tokenForId(eventId: number): string {
+        const secret = getOptions().signingSecret;
+        if (secret) return signValue(String(eventId), secret);
+        return String(eventId);
+    }
+
+    private rewriteLinks(html: string, token: string, base: string): string {
         const ownPrefixes = ownTrackingPrefixes();
         return html.replace(/<a\b([^>]*?)\bhref\s*=\s*(["'])(.*?)\2/gi, (match, attrs, quote, url) => {
             const trimmed = String(url).trim();
             if (!trimmed) return match;
             if (/^(mailto:|tel:|#)/i.test(trimmed)) return match;
             if (ownPrefixes.some(p => trimmed.startsWith(p))) return match;
-            // unsubscribe / list-unsubscribe links — never rewrite (ESP rules
-            // and recipient privacy expectations).
             if (/unsubscribe/i.test(trimmed) || /\bopt[-_]?out\b/i.test(trimmed)) return match;
             const encoded = encodeURIComponent(trimmed);
-            return `<a${attrs}href=${quote}${base}/email-track/click/${eventId}?u=${encoded}${quote}`;
+            return `<a${attrs}href=${quote}${base}/email-track/click/${token}?u=${encoded}${quote}`;
         });
     }
 
     /** Record a pixel-hit open. Idempotent re-counting; firstOpenedAt only
      *  set the first time. Full history of the last 50 opens is kept on
-     *  the row as `opensJson` for the admin detail page. */
+     *  the row as `opensJson` for the admin detail page.
+     *
+     *  Each open entry includes:
+     *    - ts        ISO timestamp
+     *    - ip        raw or hashed (per `hashIpsInHistory` option)
+     *    - ipHash    one-way hash with the per-install salt
+     *    - ua / client / platform / isBot   from parseEmailClient
+     *    - country / region / city / timezone   best-effort MaxMind geo
+     */
     async recordOpen(id: number, ip: string | null, ua: string | null) {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
         const row = await repo.findOne({ where: { id } });
         if (!row) return;
+        const opts = getOptions();
         const now = new Date();
         row.lastOpenedAt = now;
         row.openCount = (row.openCount || 0) + 1;
+
+        // Geo lookup uses the raw IP — done before hashing so we can
+        // resolve country/city even when the stored IP is anonymised.
+        const geo = await lookupGeo(ip);
+        const ipForRow = opts.hashIpsInHistory ? hashIp(ip, opts.ipSalt || '') : ip;
+
         if (!row.firstOpenedAt) {
             row.firstOpenedAt = now;
-            row.firstOpenIp = ip || undefined as any;
+            row.firstOpenIp = ipForRow || undefined as any;
             row.firstOpenUserAgent = ua ? ua.slice(0, 1000) : undefined as any;
         }
         let opens: any[] = [];
@@ -164,35 +206,48 @@ export class EmailTrackingService {
         const parsed = parseEmailClient(ua);
         opens.push({
             ts: now.toISOString(),
-            ip,
+            ip: ipForRow,
+            ipHash: hashIp(ip, opts.ipSalt || ''),
             ua: ua ? ua.slice(0, 300) : null,
             client: parsed.client,
             platform: parsed.platform,
             isBot: parsed.isBot,
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            timezone: geo.timezone,
         });
         if (opens.length > 50) opens = opens.slice(-50);
         row.opensJson = JSON.stringify(opens);
         await repo.save(row);
     }
 
-    /** Record a click + return the original URL so the controller can 302. */
+    /** Record a click. Geo + IP hashing applied the same way as opens. */
     async recordClick(id: number, url: string, ip: string | null, ua: string | null): Promise<string | null> {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
         const row = await repo.findOne({ where: { id } });
         if (!row) return null;
+        const opts = getOptions();
         const now = new Date();
         if (!row.firstClickedAt) row.firstClickedAt = now;
         row.clickCount = (row.clickCount || 0) + 1;
+
+        const geo = await lookupGeo(ip);
+        const ipForRow = opts.hashIpsInHistory ? hashIp(ip, opts.ipSalt || '') : ip;
+
         let clicks: any[] = [];
         try { clicks = JSON.parse(row.clicksJson || '[]'); } catch {}
         clicks.push({
             url: url.slice(0, 1000),
             ts: now.toISOString(),
-            ip,
+            ip: ipForRow,
+            ipHash: hashIp(ip, opts.ipSalt || ''),
             ua: ua ? ua.slice(0, 300) : null,
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            timezone: geo.timezone,
         });
-        // Cap the JSON at the most recent 50 events; older ones live as
-        // a per-row clickCount only.
         if (clicks.length > 50) clicks = clicks.slice(-50);
         row.clicksJson = JSON.stringify(clicks);
         await repo.save(row);
