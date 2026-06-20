@@ -1,10 +1,39 @@
 # Changelog
 
-All notable changes to `@hulo/vendure-plugin-email-tracking` are documented
+All notable changes to `@huloglobal/vendure-plugin-email-tracking` are documented
 here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — Unreleased
+## [0.3.0]
+
+### Added
+- **Suppression list** — new `EmailSuppression` entity. Hard bounces
+  and complaints auto-add to the table; `sendTracked()` refuses
+  recipients on the list and writes `status='suppressed'`. CRUD
+  endpoints (`GET /email-track/suppression`,
+  `POST /email-track/suppression`,
+  `DELETE /email-track/suppression/:recipient`).
+- **Per-template analytics** — `GET /email-track/log/stats/by-template`
+  returns open rate, click rate and click-to-open per email type.
+- **Device + client detection** — every open is classified (Gmail web,
+  Outlook desktop, Apple Mail iOS, Thunderbird, Yahoo, prefetch proxies,
+  bots / scanners). Stored on each open history entry.
+- **CSV export** — `GET /email-track/log/export.csv` mirrors the list
+  endpoint's filters (max 50 000 rows).
+
+### Changed
+- Admin UI Email Log detail view now renders the full open and click
+  history tables (was just clicks before).
+
+## [0.2.0]
+
+### Added
+- Full per-event open history (`opensJson`) alongside the existing click
+  history. Capped to the last 50 opens per email — older opens still
+  contribute to `openCount`. Surfaced as `opens: []` on
+  `GET /email-track/log/:id`.
+
+## [0.1.0]
 
 ### Added
 - `EmailTrackingPlugin` — wraps `@vendure/email-plugin` and persists every
@@ -20,5 +49,5 @@ and this project adheres to [semantic versioning](https://semver.org/spec/v2.0.0
 - Admin endpoints `/email-track/log` (paginated list with filters),
   `/email-track/log/summary` and `/email-track/log/:id`.
 - Admin UI: standalone Email Log page + a per-customer Emails view.
-- Licence verification via `@hulo/vendure-licence-sdk` with revocation
+- Licence verification via `@huloglobal/vendure-licence-sdk` with revocation
   polling against the HULO licence server.

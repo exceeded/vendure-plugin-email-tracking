@@ -1,6 +1,7 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { RevocationChecker, verifyLicence } from '@hulo/vendure-licence-sdk';
+import { RevocationChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
+import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
@@ -24,7 +25,7 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
     || 'https://elite.charity/licence/revoked.json';
 
 /**
- * `@hulo/vendure-plugin-email-tracking`
+ * `@huloglobal/vendure-plugin-email-tracking`
  *
  * Logs every transactional email a Vendure server sends — Vendure-plugin
  * sends (order confirmation, OTP, password reset, invoice, etc.) plus
@@ -36,7 +37,7 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
  * Add to your Vendure config:
  *
  * ```ts
- * import { EmailTrackingPlugin, TrackingEmailSender } from '@hulo/vendure-plugin-email-tracking';
+ * import { EmailTrackingPlugin, TrackingEmailSender } from '@huloglobal/vendure-plugin-email-tracking';
  *
  * export const config: VendureConfig = {
  *   plugins: [
@@ -59,7 +60,7 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
     imports: [PluginCommonModule],
     providers: [EmailTrackingService],
     controllers: [EmailTrackingController],
-    entities: [EmailLog],
+    entities: [EmailLog, EmailSuppression],
     compatibility: '^3.0.0',
 })
 export class EmailTrackingPlugin {
@@ -89,7 +90,7 @@ export class EmailTrackingPlugin {
         if (!status.valid) {
             // eslint-disable-next-line no-console
             console.warn(
-                `[@hulo/vendure-plugin-email-tracking] ${status.message}` +
+                `[@huloglobal/vendure-plugin-email-tracking] ${status.message}` +
                 ` — Running in unlicensed mode. Purchase a key at https://elite-software.co.uk/licence/buy/${PLUGIN_ID}`,
             );
         }

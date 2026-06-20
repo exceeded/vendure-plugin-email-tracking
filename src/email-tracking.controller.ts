@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Post, Query, Req, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, Req, Res } from '@nestjs/common';
 import { Ctx, Logger, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
+import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
 
 const loggerCtx = 'EmailTrackingController';
@@ -173,7 +174,125 @@ export class EmailTrackingController {
         const row = await this.connection.rawConnection.getRepository(EmailLog).findOne({ where: { id } });
         if (!row) return res.status(404).json({ error: 'Not found' });
         let clicks: any[] = [];
+        let opens: any[] = [];
         try { clicks = JSON.parse(row.clicksJson || '[]'); } catch {}
-        return res.json({ ...row, clicks, clicksJson: undefined });
+        try { opens = JSON.parse(row.opensJson || '[]'); } catch {}
+        return res.json({ ...row, clicks, opens, clicksJson: undefined, opensJson: undefined });
+    }
+
+    /** Admin: per-template aggregates — open rate + CTR by `type`.
+     * Drives the "By template" tab in the admin UI. */
+    @Get('log/stats/by-template')
+    async byTemplate(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        const days = Math.min(Math.max(parseInt((req.query as any).fromDays, 10) || 30, 1), 365);
+        const rows = await this.connection.rawConnection.query(
+            `SELECT type,
+                    COUNT(*)                                   AS sent,
+                    SUM(openCount > 0)                         AS opened,
+                    SUM(clickCount > 0)                        AS clicked,
+                    SUM(status='bounced' OR status='complained') AS bounced,
+                    SUM(status='failed')                       AS failed,
+                    SUM(status='suppressed')                   AS suppressed,
+                    SUM(openCount)                             AS totalOpens,
+                    SUM(clickCount)                            AS totalClicks
+             FROM email_log
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             GROUP BY type
+             ORDER BY sent DESC`,
+            [days],
+        );
+        return res.json({ days, types: rows.map((r: any) => ({
+            ...r,
+            openRate: r.sent > 0 ? (r.opened / r.sent) : 0,
+            clickRate: r.sent > 0 ? (r.clicked / r.sent) : 0,
+            ctor: r.opened > 0 ? (r.clicked / r.opened) : 0, // click-to-open
+        })) });
+    }
+
+    /** Admin: CSV export of the log with the same filters as the list view. */
+    @Get('log/export.csv')
+    async exportCsv(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        const q = req.query as any;
+        const where: string[] = [];
+        const params: any[] = [];
+        if (q.customerId) { where.push('customerId = ?'); params.push(parseInt(q.customerId, 10)); }
+        if (q.orderId) { where.push('orderId = ?'); params.push(parseInt(q.orderId, 10)); }
+        if (q.orderCode) { where.push('orderCode = ?'); params.push(String(q.orderCode)); }
+        if (q.status) { where.push('status = ?'); params.push(String(q.status)); }
+        if (q.type) { where.push('type = ?'); params.push(String(q.type)); }
+        if (q.recipient) { where.push('recipient LIKE ?'); params.push(`%${String(q.recipient)}%`); }
+        if (q.from) { where.push('createdAt >= ?'); params.push(new Date(String(q.from))); }
+        if (q.to) { where.push('createdAt <= ?'); params.push(new Date(String(q.to))); }
+        const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+        const rows = await this.connection.rawConnection.query(
+            `SELECT createdAt, type, recipient, subject, status,
+                    openCount, clickCount, customerId, orderCode, invoiceId,
+                    smtpMessageId, errorMessage
+             FROM email_log ${whereClause}
+             ORDER BY createdAt DESC LIMIT 50000`,
+            params,
+        );
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="email-log-${new Date().toISOString().slice(0, 10)}.csv"`);
+        const esc = (v: any): string => {
+            if (v === null || v === undefined) return '';
+            const s = String(v).replace(/"/g, '""');
+            return /[",\n]/.test(s) ? `"${s}"` : s;
+        };
+        const header = 'createdAt,type,recipient,subject,status,openCount,clickCount,customerId,orderCode,invoiceId,smtpMessageId,errorMessage\n';
+        res.write(header);
+        for (const r of rows) {
+            res.write([
+                esc(r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt),
+                esc(r.type), esc(r.recipient), esc(r.subject), esc(r.status),
+                esc(r.openCount), esc(r.clickCount), esc(r.customerId),
+                esc(r.orderCode), esc(r.invoiceId),
+                esc(r.smtpMessageId), esc(r.errorMessage),
+            ].join(',') + '\n');
+        }
+        return res.end();
+    }
+
+    /** Admin: list suppression entries. */
+    @Get('suppression')
+    async listSuppression(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        const take = Math.min(parseInt(String((req.query as any).take), 10) || 200, 1000);
+        const recipient = (req.query as any).recipient;
+        const rows = recipient
+            ? await this.connection.rawConnection.getRepository(EmailSuppression).find({
+                where: { recipient: String(recipient).toLowerCase() }, take,
+            })
+            : await this.connection.rawConnection.getRepository(EmailSuppression).find({
+                order: { id: 'DESC' }, take,
+            });
+        return res.json({ items: rows, total: rows.length });
+    }
+
+    /** Admin: manually suppress a recipient (e.g. when the customer asks
+     * to be removed). */
+    @Post('suppression')
+    async addSuppression(@Ctx() ctx: RequestContext, @Body() body: any, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, true)) return;
+        const recipient = String(body?.recipient || '').trim();
+        if (!recipient.includes('@')) return res.status(400).json({ error: 'Valid recipient required' });
+        const row = await this.tracking.addSuppression(
+            recipient,
+            String(body?.reason || 'manual'),
+            body?.note ? String(body.note) : undefined,
+            body?.channelId ? Number(body.channelId) : undefined,
+        );
+        return res.json({ ok: true, row });
+    }
+
+    /** Admin: lift a suppression (recipient asked to be re-subscribed,
+     * or it was a transient hard bounce). */
+    @Delete('suppression/:recipient')
+    async deleteSuppression(@Ctx() ctx: RequestContext, @Param('recipient') recipient: string, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, true)) return;
+        const removed = await this.tracking.removeSuppression(recipient);
+        return res.json({ ok: removed });
     }
 }

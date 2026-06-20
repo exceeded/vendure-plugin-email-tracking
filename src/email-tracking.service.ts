@@ -2,7 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import * as nodemailer from 'nodemailer';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
+import { EmailSuppression } from './email-suppression.entity';
 import { ownTrackingPrefixes, trackingBaseUrl } from './options';
+import { parseEmailClient } from './parse-ua';
 
 const loggerCtx = 'EmailTrackingService';
 
@@ -40,6 +42,24 @@ export class EmailTrackingService {
         meta: SendTrackedMeta,
     ): Promise<EmailLog> {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
+        const recipient = this.firstAddress(mail.to) || '';
+
+        // Suppression check — refuse to call SMTP for recipients on the
+        // suppression list, and record a `status='suppressed'` row so
+        // the admin can still see the attempt in the log.
+        if (recipient && await this.isSuppressed(recipient)) {
+            const suppressed = repo.create({
+                type: meta.type, recipient,
+                subject: String(mail.subject || ''),
+                fromAddress: this.firstAddress(mail.from as any),
+                channelId: meta.channelId || 1,
+                customerId: meta.customerId, orderId: meta.orderId, orderCode: meta.orderCode,
+                invoiceId: meta.invoiceId, applicationId: meta.applicationId,
+                status: 'suppressed' as EmailLogStatus, tracked: true,
+                errorMessage: 'Recipient is on the suppression list',
+            });
+            return await repo.save(suppressed);
+        }
 
         // Create the row up-front so the pixel/click URLs have an id to
         // reference. status starts as 'sent' optimistically; we update
@@ -125,7 +145,8 @@ export class EmailTrackingService {
     }
 
     /** Record a pixel-hit open. Idempotent re-counting; firstOpenedAt only
-     *  set the first time. */
+     *  set the first time. Full history of the last 50 opens is kept on
+     *  the row as `opensJson` for the admin detail page. */
     async recordOpen(id: number, ip: string | null, ua: string | null) {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
         const row = await repo.findOne({ where: { id } });
@@ -138,6 +159,19 @@ export class EmailTrackingService {
             row.firstOpenIp = ip || undefined as any;
             row.firstOpenUserAgent = ua ? ua.slice(0, 1000) : undefined as any;
         }
+        let opens: any[] = [];
+        try { opens = JSON.parse(row.opensJson || '[]'); } catch {}
+        const parsed = parseEmailClient(ua);
+        opens.push({
+            ts: now.toISOString(),
+            ip,
+            ua: ua ? ua.slice(0, 300) : null,
+            client: parsed.client,
+            platform: parsed.platform,
+            isBot: parsed.isBot,
+        });
+        if (opens.length > 50) opens = opens.slice(-50);
+        row.opensJson = JSON.stringify(opens);
         await repo.save(row);
     }
 
@@ -166,7 +200,9 @@ export class EmailTrackingService {
     }
 
     /** SMTP DSN (bounce / complaint) hook — wire up if you point Postmaster
-     *  Tools / a bounce-processor at /email-track/bounce. */
+     *  Tools / a bounce-processor at /email-track/bounce. Hard bounces +
+     *  complaints automatically add the recipient to the suppression list
+     *  so the next send-attempt is refused. */
     async recordBounce(messageId: string, status: 'bounced' | 'complained', reason?: string) {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
         const row = await repo.findOne({ where: { smtpMessageId: messageId } });
@@ -174,7 +210,46 @@ export class EmailTrackingService {
         row.status = status;
         if (reason) row.errorMessage = reason.slice(0, 2000);
         await repo.save(row);
+
+        if (row.recipient) {
+            const suppressionReason = status === 'complained' ? 'complaint' : 'hard-bounce';
+            await this.addSuppression(row.recipient, suppressionReason, reason || `Auto-added from ${status} on email #${row.id}`, row.channelId);
+        }
         return true;
+    }
+
+    /** Returns true if the recipient should be skipped at send-time. */
+    async isSuppressed(recipient: string): Promise<boolean> {
+        if (!recipient) return false;
+        const repo = this.connection.rawConnection.getRepository(EmailSuppression);
+        const row = await repo.findOne({ where: { recipient: recipient.toLowerCase() } });
+        return !!row;
+    }
+
+    async addSuppression(recipient: string, reason: string, note?: string, channelId?: number): Promise<EmailSuppression> {
+        const repo = this.connection.rawConnection.getRepository(EmailSuppression);
+        const lower = recipient.toLowerCase();
+        const existing = await repo.findOne({ where: { recipient: lower } });
+        if (existing) {
+            if (note && note !== existing.note) {
+                existing.note = note.slice(0, 2000);
+                return await repo.save(existing);
+            }
+            return existing;
+        }
+        const row = repo.create({
+            recipient: lower,
+            reason,
+            note: note ? note.slice(0, 2000) : (null as any),
+            channelId: channelId || null as any,
+        });
+        return await repo.save(row);
+    }
+
+    async removeSuppression(recipient: string): Promise<boolean> {
+        const repo = this.connection.rawConnection.getRepository(EmailSuppression);
+        const res = await repo.delete({ recipient: recipient.toLowerCase() });
+        return !!(res.affected && res.affected > 0);
     }
 
     private firstAddress(addr: any): string | undefined {

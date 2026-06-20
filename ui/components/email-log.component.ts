@@ -34,6 +34,7 @@ interface EmailDetail extends EmailRow {
     firstOpenIp: string | null;
     firstOpenUserAgent: string | null;
     clicks: Array<{ url: string; ts: string; ip: string | null; ua: string | null }>;
+    opens: Array<{ ts: string; ip: string | null; ua: string | null }>;
 }
 
 @Component({
@@ -171,18 +172,36 @@ interface EmailDetail extends EmailRow {
                                                 <div *ngIf="detail.firstOpenUserAgent" style="font-size:11px;color:var(--color-component-color-300)">{{ detail.firstOpenUserAgent }}</div>
                                             </div>
                                         </div>
-                                        <h5 style="margin-top:15px" *ngIf="detail.clicks.length > 0">Clicks ({{ detail.clickCount }})</h5>
-                                        <table class="table table-compact" *ngIf="detail.clicks.length > 0">
-                                            <thead><tr><th>Time</th><th>URL</th><th>IP</th><th>UA</th></tr></thead>
+                                        <h5 style="margin-top:18px" *ngIf="detail.opens && detail.opens.length > 0">Open history ({{ detail.openCount }})</h5>
+                                        <table class="table table-compact" *ngIf="detail.opens && detail.opens.length > 0">
+                                            <thead><tr><th style="width:160px">Time</th><th style="width:140px">IP</th><th>User-Agent</th></tr></thead>
                                             <tbody>
-                                                <tr *ngFor="let c of detail.clicks">
-                                                    <td>{{ c.ts | date:'short' }}</td>
-                                                    <td style="font-family:monospace;font-size:11px;word-break:break-all"><a [href]="c.url" target="_blank">{{ c.url }}</a></td>
-                                                    <td>{{ c.ip }}</td>
-                                                    <td style="font-size:11px;color:var(--color-component-color-300)">{{ c.ua }}</td>
+                                                <tr *ngFor="let o of detail.opens">
+                                                    <td>{{ o.ts | date:'medium' }}</td>
+                                                    <td style="font-family:monospace;font-size:11px">{{ o.ip || '—' }}</td>
+                                                    <td style="font-size:11px;color:var(--color-component-color-300)">{{ o.ua || '—' }}</td>
                                                 </tr>
                                             </tbody>
                                         </table>
+                                        <p *ngIf="detail.openCount > 50 && detail.opens && detail.opens.length === 50" class="help-text" style="margin:6px 0 0">
+                                            Showing the most recent 50 opens. Older opens contribute to the open count above.
+                                        </p>
+
+                                        <h5 style="margin-top:18px" *ngIf="detail.clicks.length > 0">Click history ({{ detail.clickCount }})</h5>
+                                        <table class="table table-compact" *ngIf="detail.clicks.length > 0">
+                                            <thead><tr><th style="width:160px">Time</th><th>URL</th><th style="width:140px">IP</th><th>User-Agent</th></tr></thead>
+                                            <tbody>
+                                                <tr *ngFor="let c of detail.clicks">
+                                                    <td>{{ c.ts | date:'medium' }}</td>
+                                                    <td style="font-family:monospace;font-size:11px;word-break:break-all"><a [href]="c.url" target="_blank">{{ c.url }}</a></td>
+                                                    <td style="font-family:monospace;font-size:11px">{{ c.ip || '—' }}</td>
+                                                    <td style="font-size:11px;color:var(--color-component-color-300)">{{ c.ua || '—' }}</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                        <p *ngIf="detail.clickCount > 50 && detail.clicks.length === 50" class="help-text" style="margin:6px 0 0">
+                                            Showing the most recent 50 clicks. Older clicks contribute to the click count above.
+                                        </p>
                                     </td>
                                 </tr>
                             </ng-container>

@@ -1,4 +1,4 @@
-# @hulo/vendure-plugin-email-tracking
+# @huloglobal/vendure-plugin-email-tracking
 
 Track delivery, opens and clicks on every transactional email a Vendure
 server sends. Wraps `@vendure/email-plugin`, persists every send + open
@@ -28,14 +28,14 @@ Maintained by Wayne Garrison.
 ## Install
 
 ```bash
-yarn add @hulo/vendure-plugin-email-tracking
+yarn add @huloglobal/vendure-plugin-email-tracking
 ```
 
 ## Wire up
 
 ```ts
 import { EmailPlugin } from '@vendure/email-plugin';
-import { EmailTrackingPlugin, TrackingEmailSender } from '@hulo/vendure-plugin-email-tracking';
+import { EmailTrackingPlugin, TrackingEmailSender } from '@huloglobal/vendure-plugin-email-tracking';
 
 export const config: VendureConfig = {
   plugins: [
@@ -54,7 +54,7 @@ export const config: VendureConfig = {
 Add to your admin-ui compile step:
 
 ```ts
-import { EmailTrackingPlugin } from '@hulo/vendure-plugin-email-tracking';
+import { EmailTrackingPlugin } from '@huloglobal/vendure-plugin-email-tracking';
 
 compileUiExtensions({
   outputPath: 'admin-ui',
@@ -101,7 +101,7 @@ AddEmailLog` (Vendure picks up the entity automatically) and apply with
 ## Sending custom tracked emails
 
 ```ts
-import { EmailTrackingService } from '@hulo/vendure-plugin-email-tracking';
+import { EmailTrackingService } from '@huloglobal/vendure-plugin-email-tracking';
 
 @Controller('my-feature')
 export class MyController {

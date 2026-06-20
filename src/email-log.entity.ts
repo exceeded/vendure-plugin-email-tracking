@@ -6,7 +6,8 @@ export type EmailLogStatus =
     | 'failed'      // SMTP rejected at submit-time (4xx/5xx) or threw
     | 'deferred'    // Temporary failure (4xx)
     | 'bounced'     // Permanent failure (later)
-    | 'complained'; // Recipient marked as spam (later)
+    | 'complained'  // Recipient marked as spam (later)
+    | 'suppressed'; // Refused at send-time because the recipient is on the suppression list
 
 /**
  * One row per outgoing email. Captures send metadata + engagement:
@@ -108,6 +109,11 @@ export class EmailLog extends VendureEntity {
 
     @Column({ type: 'text', nullable: true })
     firstOpenUserAgent!: string;
+
+    /** JSON-encoded array of { ts, ip, ua }, mirroring clicksJson. Capped
+     * at the most recent 50; older opens live as openCount only. */
+    @Column({ type: 'text', nullable: true })
+    opensJson!: string;
 
     @Column({ type: 'int', default: 0 })
     clickCount!: number;

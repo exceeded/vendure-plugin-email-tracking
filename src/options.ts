@@ -7,7 +7,7 @@
  * available before that happens.
  */
 
-import { LicenceStatus } from '@hulo/vendure-licence-sdk';
+import { LicenceStatus } from '@huloglobal/vendure-licence-sdk';
 
 export interface EmailTrackingPluginOptions {
     /**
