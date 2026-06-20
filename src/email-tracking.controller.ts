@@ -4,6 +4,8 @@ import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
+import { EmailTrackingPlugin } from './plugin';
+import { getOptions, getLicenceStatus } from './options';
 
 const loggerCtx = 'EmailTrackingController';
 
@@ -35,6 +37,27 @@ export class EmailTrackingController {
         private connection: TransactionalConnection,
         private tracking: EmailTrackingService,
     ) {}
+
+    /**
+     * Admin: plugin health + update availability. Read by the admin UI
+     * banner so the operator sees when a new version is on npm.
+     *
+     * GET /email-track/status
+     */
+    @Get('status')
+    async status(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        const updater = EmailTrackingPlugin.getUpdateChecker();
+        const update = updater ? updater.getStatus() : null;
+        const licence = getLicenceStatus();
+        return res.json({
+            packageName: EmailTrackingPlugin.getPackageName(),
+            version: EmailTrackingPlugin.getPackageVersion(),
+            licence: licence ? { valid: licence.valid, reason: licence.reason, plan: licence.payload?.plan, expiresAt: licence.payload?.exp } : null,
+            update,
+            uptimeSec: Math.round(process.uptime()),
+        });
+    }
 
     /**
      * Open-tracking pixel. Returns a 1×1 transparent GIF and logs the

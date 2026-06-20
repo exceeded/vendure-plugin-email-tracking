@@ -1,11 +1,15 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { RevocationChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
+import { RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
 import { EmailTrackingPluginOptions, setLicenceStatus, setOptions } from './options';
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const PKG_VERSION: string = require('../package.json').version;
+const PKG_NAME = '@huloglobal/vendure-plugin-email-tracking';
 
 // Public key embedded at build time. The matching private key lives on
 // HULO's licence server and never leaves it. If you fork this plugin
@@ -65,6 +69,13 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
 })
 export class EmailTrackingPlugin {
     private static revocation: RevocationChecker | null = null;
+    private static updateChecker: UpdateChecker | null = null;
+
+    /** Per-process snapshot of the latest update status — read by the
+     * controller's `/status` endpoint and the admin UI banner. */
+    static getUpdateChecker(): UpdateChecker | null { return EmailTrackingPlugin.updateChecker; }
+    static getPackageVersion(): string { return PKG_VERSION; }
+    static getPackageName(): string { return PKG_NAME; }
 
     static init(options: EmailTrackingPluginOptions): Type<EmailTrackingPlugin> {
         setOptions(options);
@@ -74,6 +85,10 @@ export class EmailTrackingPlugin {
         if (!EmailTrackingPlugin.revocation) {
             EmailTrackingPlugin.revocation = new RevocationChecker(REVOCATION_URL);
             EmailTrackingPlugin.revocation.start();
+        }
+        if (!EmailTrackingPlugin.updateChecker) {
+            EmailTrackingPlugin.updateChecker = new UpdateChecker(PKG_NAME, PKG_VERSION);
+            EmailTrackingPlugin.updateChecker.start();
         }
 
         const host = (options.publicBaseUrl || '')
