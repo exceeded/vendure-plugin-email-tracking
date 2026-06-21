@@ -4,6 +4,47 @@ All notable changes to `@huloglobal/vendure-plugin-email-tracking` are documente
 here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1]
+
+### Changed
+- Comprehensive README refresh — documents the full v0.4 feature set
+  with copy-paste config including every security + retention option.
+
+## [0.4.0]
+
+### Added
+- Signed open + click URLs — when `signingSecret` is configured, the
+  URLs embed an HMAC tag and forged ids are rejected.
+- Click redirector domain allowlist (`clickRedirectAllowedDomains`).
+- HMAC verification on the `POST /email-track/bounce` webhook
+  (`bounceWebhookSecret`).
+- IP hashing on opens + clicks history (`hashIpsInHistory`, default
+  true; `ipSalt` setting).
+- Best-effort MaxMind geo lookup (country / region / city / timezone)
+  on every recorded open and click, surfaced in the admin detail.
+- Rate limiter (60/60s default) on `/open` + `/click`.
+- Security headers on every response via the licence-sdk helper.
+- Opt-in retention sweeper via `options.retention`.
+
+## [0.3.3]
+
+### Changed
+- Mobile-friendly admin UI — summary cards reflow, filters stack with
+  44px tap targets, tables overflow-x scroll inside the card. Update
+  banner reflows on mobile.
+
+## [0.3.2]
+
+### Changed
+- Republish targeting `@huloglobal/vendure-licence-sdk@^0.2.0`.
+
+## [0.3.1]
+
+### Added
+- `UpdateChecker` integration via the licence-sdk — `/email-track/status`
+  endpoint returns version + update info, admin UI shows a banner when
+  a new version is available.
+
 ## [0.3.0]
 
 ### Added
