@@ -1,53 +1,53 @@
 {
-    "name": "@huloglobal/vendure-plugin-email-tracking",
-    "version": "0.4.3",
-    "description": "Track delivery, opens and clicks on every transactional email a Vendure server sends. Wraps the @vendure/email-plugin pipeline plus an exposed helper for plugin-authored sends, persists every event to a dedicated EmailLog table, and ships an admin UI for per-customer / per-order audit trails.",
-    "license": "SEE LICENSE IN LICENSE",
-    "author": "Wayne Garrison <wayne@garrison.me.uk>",
-    "homepage": "https://github.com/exceeded/vendure-plugin-email-tracking",
-    "repository": {
-        "type": "git",
-        "url": "git+https://github.com/exceeded/vendure-plugin-email-tracking.git"
-    },
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
-    "files": [
-        "dist",
-        "ui",
-        "README.md",
-        "CHANGELOG.md",
-        "LICENSE"
-    ],
-    "scripts": {
-        "build": "tsc -p tsconfig.json",
-        "prepublishOnly": "yarn build"
-    },
-    "dependencies": {
-        "@huloglobal/vendure-licence-sdk": "^0.3.1"
-    },
-    "peerDependencies": {
-        "@vendure/core": ">=3.0.0",
-        "@vendure/email-plugin": ">=3.0.0",
-        "@nestjs/common": ">=10.0.0",
-        "nodemailer": ">=6.0.0",
-        "typeorm": ">=0.3.0"
-    },
-    "devDependencies": {
-        "@huloglobal/vendure-licence-sdk": "^0.3.1",
-        "@nestjs/common": "^10.0.0",
-        "@types/nodemailer": "^6.0.0",
-        "@vendure/core": "^3.6.0",
-        "@vendure/email-plugin": "^3.6.0",
-        "nodemailer": "^6.9.0",
-        "typeorm": "^0.3.0",
-        "typescript": "^5.4.0"
-    },
-    "keywords": [
-        "vendure",
-        "vendure-plugin",
-        "email-tracking",
-        "email",
-        "transactional-email",
-        "analytics"
-    ]
+  "name": "@huloglobal/vendure-plugin-email-tracking",
+  "version": "0.5.0",
+  "description": "Track delivery, opens and clicks on every transactional email a Vendure server sends. Wraps the @vendure/email-plugin pipeline plus an exposed helper for plugin-authored sends, persists every event to a dedicated EmailLog table, and ships an admin UI for per-customer / per-order audit trails.",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Wayne Garrison <wayne@garrison.me.uk>",
+  "homepage": "https://github.com/exceeded/vendure-plugin-email-tracking",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/exceeded/vendure-plugin-email-tracking.git"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "ui",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "yarn build"
+  },
+  "dependencies": {
+    "@huloglobal/vendure-licence-sdk": "^0.4.0"
+  },
+  "peerDependencies": {
+    "@vendure/core": ">=3.0.0",
+    "@vendure/email-plugin": ">=3.0.0",
+    "@nestjs/common": ">=10.0.0",
+    "nodemailer": ">=6.0.0",
+    "typeorm": ">=0.3.0"
+  },
+  "devDependencies": {
+    "@huloglobal/vendure-licence-sdk": "^0.4.0",
+    "@nestjs/common": "^10.0.0",
+    "@types/nodemailer": "^6.0.0",
+    "@vendure/core": "^3.6.0",
+    "@vendure/email-plugin": "^3.6.0",
+    "nodemailer": "^6.9.0",
+    "typeorm": "^0.3.0",
+    "typescript": "^5.4.0"
+  },
+  "keywords": [
+    "vendure",
+    "vendure-plugin",
+    "email-tracking",
+    "email",
+    "transactional-email",
+    "analytics"
+  ]
 }
