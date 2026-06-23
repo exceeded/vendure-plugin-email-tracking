@@ -323,6 +323,12 @@ interface EmailDetail extends EmailRow {
 
         /* Mobile under 768px */
         @media (max-width: 767px) {
+            /* Interactive elements in our component meet the 44px tap target */
+            :host button, :host .btn { min-height: 40px; }
+            :host vdr-action-bar button { min-height: 40px; padding: 6px 12px; }
+            :host vdr-action-bar { flex-wrap: wrap; gap: 6px; }
+            .pager .btn { min-height: 44px; padding: 8px 14px; }
+            .pager span { display: block; width: 100%; text-align: center; padding: 4px 0; }
             .summary-row { gap: 8px; }
             .summary-card { min-width: 0; flex-basis: calc(50% - 4px); padding: 10px 12px; }
             .summary-card .num { font-size: 20px; }
@@ -330,9 +336,9 @@ interface EmailDetail extends EmailRow {
             .filters .form-input { width: 100%; min-width: 0; }
             .filters .btn { width: 100%; min-height: 44px; }
 
-            /* Tables stay tabular but scroll horizontally inside the card */
-            .card-block { padding: 12px; }
-            .card-block > table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+            /* Card-block scrolls horizontally; table keeps natural layout */
+            .card-block { padding: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .card-block > table { white-space: nowrap; }
             .card-block > table th, .card-block > table td { padding: 8px 10px; }
             .detail-row > td { padding: 12px; display: block; }
             .detail-grid { grid-template-columns: 1fr; gap: 10px; }

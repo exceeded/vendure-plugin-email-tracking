@@ -1,11 +1,12 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
+import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
 import { EmailTrackingPluginOptions, setLicenceStatus, setOptions } from './options';
+import { EmailTrackingAdminResolver, emailTrackingAdminApiSchema } from './admin-api';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PKG_VERSION: string = require('../package.json').version;
@@ -62,14 +63,19 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
  */
 @VendurePlugin({
     imports: [PluginCommonModule],
-    providers: [EmailTrackingService],
+    providers: [EmailTrackingService, EmailTrackingAdminResolver],
     controllers: [EmailTrackingController],
     entities: [EmailLog, EmailSuppression],
     compatibility: '^3.0.0',
+    adminApiExtensions: {
+        schema: emailTrackingAdminApiSchema,
+        resolvers: [EmailTrackingAdminResolver],
+    },
 })
 export class EmailTrackingPlugin {
     private static revocation: RevocationChecker | null = null;
     private static updateChecker: UpdateChecker | null = null;
+    private static heartbeat: Heartbeat | null = null;
 
     /** Per-process snapshot of the latest update status — read by the
      * controller's `/status` endpoint and the admin UI banner. */
@@ -106,8 +112,18 @@ export class EmailTrackingPlugin {
             // eslint-disable-next-line no-console
             console.warn(
                 `[@huloglobal/vendure-plugin-email-tracking] ${status.message}` +
-                ` — Running in unlicensed mode. Purchase a key at https://elite-software.co.uk/licence/buy/${PLUGIN_ID}`,
+                ` — Running in FREE tier: opens + clicks NOT recorded, suppression list NOT enforced at send, per-template stats + CSV export disabled. Buy a licence at https://elite.charity/licence/buy/${PLUGIN_ID}`,
             );
+        }
+
+        if (!EmailTrackingPlugin.heartbeat) {
+            EmailTrackingPlugin.heartbeat = new Heartbeat({
+                packageName: PKG_NAME,
+                packageVersion: PKG_VERSION,
+                licenceKey: options.licenceKey,
+                publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY),
+            });
+            EmailTrackingPlugin.heartbeat.start();
         }
 
         return EmailTrackingPlugin;

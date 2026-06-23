@@ -1,11 +1,11 @@
 import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { hashIp, signValue, startRetentionSweeper } from '@huloglobal/vendure-licence-sdk';
+import { hashIp, isLicensed, signValue, startRetentionSweeper } from '@huloglobal/vendure-licence-sdk';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import * as nodemailer from 'nodemailer';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { lookupGeo } from './geo-lookup';
-import { getOptions, ownTrackingPrefixes, trackingBaseUrl } from './options';
+import { getLicenceStatus, getOptions, ownTrackingPrefixes, trackingBaseUrl } from './options';
 import { parseEmailClient } from './parse-ua';
 
 const loggerCtx = 'EmailTrackingService';
@@ -275,6 +275,11 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
 
     /** Returns true if the recipient should be skipped at send-time. */
     async isSuppressed(recipient: string): Promise<boolean> {
+        // Suppression-list enforcement is a paid feature. Unlicensed
+        // installs always return false here so the suppression rows
+        // are visible in the admin UI but not consulted on send —
+        // matches the privacy boundary "we don't gate your own emails".
+        if (!isLicensed(getLicenceStatus())) return false;
         if (!recipient) return false;
         const repo = this.connection.rawConnection.getRepository(EmailSuppression);
         const row = await repo.findOne({ where: { recipient: recipient.toLowerCase() } });
