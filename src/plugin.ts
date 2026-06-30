@@ -2,6 +2,8 @@ import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
 import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
+import { EmailLink } from './email-link.entity';
+import { EmailLinkService } from './email-link.service';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
@@ -63,9 +65,9 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
  */
 @VendurePlugin({
     imports: [PluginCommonModule],
-    providers: [EmailTrackingService, EmailTrackingAdminResolver],
+    providers: [EmailTrackingService, EmailTrackingAdminResolver, EmailLinkService],
     controllers: [EmailTrackingController],
-    entities: [EmailLog, EmailSuppression],
+    entities: [EmailLog, EmailSuppression, EmailLink],
     compatibility: '^3.0.0',
     adminApiExtensions: {
         schema: emailTrackingAdminApiSchema,

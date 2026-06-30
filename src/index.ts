@@ -14,5 +14,7 @@ export { TrackingEmailSender } from './tracking-email-sender';
 export { EmailTrackingService } from './email-tracking.service';
 export { EmailLog, EmailLogStatus } from './email-log.entity';
 export { EmailSuppression } from './email-suppression.entity';
+export { EmailLink, EmailLinkType } from './email-link.entity';
+export { EmailLinkService } from './email-link.service';
 export { EmailTrackingPluginOptions } from './options';
 export { parseEmailClient, ParsedClient } from './parse-ua';
