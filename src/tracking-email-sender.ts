@@ -40,7 +40,15 @@ export class TrackingEmailSender implements EmailSender {
         }
 
         const repo = this.connection.rawConnection.getRepository(EmailLog);
-        const row = repo.create({
+        // Vendure's `EmailDetails` doesn't carry the source Order / Customer
+        // through to the sender — we get subject/body only. Recover the
+        // orderCode from the subject (Vendure's default templates render it
+        // as `#<code>`) and then look up the Order by code for the id +
+        // customerId. Best-effort: if none of that resolves, the row still
+        // saves with just the raw envelope, exactly as before.
+        const orderCode = this.extractOrderCode(email.subject, email.body);
+        const linkedIds = orderCode ? await this.lookupOrderIds(orderCode) : null;
+        const payload: Partial<EmailLog> = {
             type: this.inferType(email.subject),
             recipient: (email.recipient || '').slice(0, 500),
             subject: (email.subject || '').slice(0, 1000),
@@ -50,8 +58,12 @@ export class TrackingEmailSender implements EmailSender {
             channelId: 1,
             status: 'sent' as EmailLogStatus,
             tracked: true,
-        });
-        const saved = await repo.save(row);
+        };
+        if (orderCode) payload.orderCode = orderCode;
+        if (linkedIds?.orderId) payload.orderId = linkedIds.orderId;
+        if (linkedIds?.customerId != null) payload.customerId = linkedIds.customerId;
+        const row = repo.create(payload);
+        const saved: EmailLog = await repo.save(row);
 
         // Rewrite + pixel-inject the html body in place.
         try {
@@ -69,6 +81,49 @@ export class TrackingEmailSender implements EmailSender {
             throw e;
         }
         Logger.info(`Tracked plugin-email [${saved.type}] to ${saved.recipient} (id=${saved.id})`, loggerCtx);
+    }
+
+    /**
+     * Pull an order code out of the email subject (or, as a fallback,
+     * the body). Vendure's default order-related templates render the
+     * order code as `#<code>` in the subject, e.g.
+     * "Order confirmation for #S2BZ54TEK91HUUBA". Order codes are always
+     * uppercase alphanumeric — accept 10–32 characters to cover custom
+     * `orderCodeStrategy` implementations.
+     */
+    private extractOrderCode(subject?: string, body?: string): string | null {
+        const rx = /#([A-Z0-9]{10,32})\b/;
+        const inSubject = rx.exec(subject || '');
+        if (inSubject) return inSubject[1];
+        const inBody = rx.exec(body || '');
+        return inBody ? inBody[1] : null;
+    }
+
+    /**
+     * Look up `orderId` + `customerId` for an order code so the
+     * per-order and per-customer Emails views can filter without a
+     * subject-string match. Best-effort — if the order isn't found
+     * (e.g. code came from a draft template that was never saved),
+     * we return null and let the row save with only `orderCode`.
+     */
+    private async lookupOrderIds(
+        code: string,
+    ): Promise<{ orderId: number; customerId: number | null } | null> {
+        try {
+            const rows: any[] = await this.connection.rawConnection.query(
+                'SELECT id, customerId FROM `order` WHERE code = ? LIMIT 1',
+                [code],
+            );
+            if (!rows?.length) return null;
+            const r = rows[0];
+            return {
+                orderId: Number(r.id),
+                customerId: r.customerId != null ? Number(r.customerId) : null,
+            };
+        } catch (e: any) {
+            Logger.warn(`orderId lookup failed for code=${code}: ${e?.message}`, loggerCtx);
+            return null;
+        }
     }
 
     /** Best-effort categorisation of plugin-email sends. */

@@ -5,6 +5,27 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] — 2026-07-04
+
+### Fixed
+- `TrackingEmailSender` now populates `orderCode`, `orderId` and
+  `customerId` on every EmailLog row it creates. Before this fix, only
+  emails sent by our own service code (which passed those ids in
+  explicitly) had them set — the Vendure email-plugin's built-in
+  order-confirmation, invoice, password-reset etc. handlers do not
+  hand order/customer entities through to the sender, so those rows
+  saved with all three ids as `NULL`. That broke the per-order and
+  per-customer Emails buttons on the admin (they filter by
+  `orderCode` / `customerId`), showing an empty list even though the
+  emails were sent.
+
+  The sender now extracts the order code from the email subject via a
+  `#<code>` regex (Vendure's default order-related templates render
+  it there — e.g. `"Order confirmation for #S2BZ54TEK91HUUBA"`), then
+  looks up the corresponding Order row to backfill `orderId` and
+  `customerId`. Best-effort: unmatched subjects fall back to the
+  previous behaviour (envelope-only row).
+
 ## [0.8.0] — 2026-07-04
 
 ### Added
@@ -167,6 +188,7 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Licence verification via `@huloglobal/vendure-licence-sdk` with
   revocation polling against the HULO licence server.
 
+[0.8.1]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.8.1
 [0.8.0]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.8.0
 [0.7.0]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.7.0
 [0.6.0]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.6.0
