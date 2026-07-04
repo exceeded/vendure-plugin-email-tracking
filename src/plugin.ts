@@ -1,5 +1,5 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
+import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailLink } from './email-link.entity';
@@ -87,6 +87,14 @@ export class EmailTrackingPlugin {
 
     static init(options: EmailTrackingPluginOptions): Type<EmailTrackingPlugin> {
         setOptions(options);
+
+        // Warn if @vendure/core at runtime is outside the tested
+        // range. Non-fatal — the plugin boots and works.
+        warnIfIncompatibleVendure({
+            pluginPackageName: PKG_NAME,
+            pluginPackageVersion: PKG_VERSION,
+            supportedRange: { min: '3.5.0', max: '4.0.0' },
+        });
 
         // Start the revocation checker once; safe to call init() again
         // during hot reloads — `RevocationChecker.start()` is idempotent.
