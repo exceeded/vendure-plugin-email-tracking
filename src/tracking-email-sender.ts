@@ -48,6 +48,13 @@ export class TrackingEmailSender implements EmailSender {
         // saves with just the raw envelope, exactly as before.
         const orderCode = this.extractOrderCode(email.subject, email.body);
         const linkedIds = orderCode ? await this.lookupOrderIds(orderCode) : null;
+        // Even without an order (password-reset, OTP, email-verification,
+        // welcome, etc.) we can still link the row to a customer by
+        // recipient email. Doing it here means the per-customer Emails
+        // view picks up ALL of these too, not just order-related sends.
+        const customerIdByEmail = !linkedIds?.customerId
+            ? await this.lookupCustomerIdByEmail(email.recipient)
+            : null;
         const payload: Partial<EmailLog> = {
             type: this.inferType(email.subject),
             recipient: (email.recipient || '').slice(0, 500),
@@ -62,6 +69,7 @@ export class TrackingEmailSender implements EmailSender {
         if (orderCode) payload.orderCode = orderCode;
         if (linkedIds?.orderId) payload.orderId = linkedIds.orderId;
         if (linkedIds?.customerId != null) payload.customerId = linkedIds.customerId;
+        else if (customerIdByEmail != null) payload.customerId = customerIdByEmail;
         const row = repo.create(payload);
         const saved: EmailLog = await repo.save(row);
 
@@ -122,6 +130,27 @@ export class TrackingEmailSender implements EmailSender {
             };
         } catch (e: any) {
             Logger.warn(`orderId lookup failed for code=${code}: ${e?.message}`, loggerCtx);
+            return null;
+        }
+    }
+
+    /**
+     * Find a Customer id by their email address so emails without any
+     * order context (password reset, OTP, verification, welcome, etc.)
+     * still show up in the per-customer Emails view. Case-insensitive
+     * lookup against the Customer table. Returns null on no-match.
+     */
+    private async lookupCustomerIdByEmail(recipient?: string): Promise<number | null> {
+        const clean = (recipient || '').split(',')[0].trim().replace(/^.*<|>.*$/g, '').trim();
+        if (!clean || !clean.includes('@')) return null;
+        try {
+            const rows: any[] = await this.connection.rawConnection.query(
+                'SELECT id FROM customer WHERE LOWER(emailAddress) = LOWER(?) AND deletedAt IS NULL LIMIT 1',
+                [clean],
+            );
+            return rows?.length ? Number(rows[0].id) : null;
+        } catch (e: any) {
+            Logger.warn(`customerId lookup failed for recipient=${clean}: ${e?.message}`, loggerCtx);
             return null;
         }
     }

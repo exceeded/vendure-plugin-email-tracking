@@ -5,6 +5,18 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] — 2026-07-04
+
+### Added
+- Recipient-email → `customerId` lookup in `TrackingEmailSender`. If
+  the subject doesn't contain an order code (password reset, OTP,
+  email verification, account welcome, etc.) the sender now does a
+  case-insensitive `Customer.emailAddress` lookup so the row still
+  links to the right customer. Combined with 0.8.1's order-code
+  extraction, this means the per-customer Emails view now surfaces
+  every send the customer ever received — order-related and
+  non-order-related.
+
 ## [0.8.1] — 2026-07-04
 
 ### Fixed
@@ -188,6 +200,7 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Licence verification via `@huloglobal/vendure-licence-sdk` with
   revocation polling against the HULO licence server.
 
+[0.8.2]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.8.2
 [0.8.1]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.8.1
 [0.8.0]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.8.0
 [0.7.0]: https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v0.7.0
