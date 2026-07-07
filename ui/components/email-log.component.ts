@@ -41,15 +41,59 @@ interface EmailDetail extends EmailRow {
     selector: 'ees-email-log',
     standalone: false,
     template: `
+        <!-- ── HULO brand hero — shared pattern across every HULO plugin. -->
         <vdr-page-block>
-            <vdr-action-bar>
-                <vdr-ab-left><h2>Email Log</h2></vdr-ab-left>
-                <vdr-ab-right>
+            <div class="hulo-hero">
+                <div class="hulo-hero-logo" aria-hidden="true">
+                    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="64" height="64" rx="14" fill="#0f1419"/>
+                        <rect x="12" y="20" width="40" height="26" rx="3" fill="none" stroke="#ffffff" stroke-width="2.5"/>
+                        <path d="M12 22 L32 36 L52 22" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round"/>
+                        <path d="M43 12 A6 6 0 0 1 49 18" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M40 10 A9 9 0 0 1 49 19" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="47" cy="19" r="1.8" fill="#f59e0b"/>
+                    </svg>
+                </div>
+                <div class="hulo-hero-text">
+                    <h2 class="hulo-hero-title">Email log</h2>
+                    <p class="hulo-hero-sub">Every transactional email your storefront sent — order confirmations, invoices, password resets. Filter by status to spot deliverability issues fast.</p>
+                </div>
+                <div class="hulo-hero-actions">
+                    <button class="btn btn-link hulo-help-btn" (click)="helpOpen = !helpOpen" [attr.aria-expanded]="helpOpen">
+                        <clr-icon shape="help"></clr-icon><span>Help</span>
+                    </button>
                     <button class="btn btn-link" (click)="load()" [disabled]="loading">
                         <clr-icon shape="refresh"></clr-icon> Refresh
                     </button>
-                </vdr-ab-right>
-            </vdr-action-bar>
+                </div>
+            </div>
+        </vdr-page-block>
+
+        <vdr-page-block *ngIf="helpOpen">
+            <div class="hulo-help-drawer">
+                <div class="hulo-help-grid">
+                    <div class="hulo-help-card">
+                        <div class="hulo-help-num">1</div>
+                        <h4>Every email captured automatically</h4>
+                        <p>The plugin hooks Vendure's outgoing mail — no code changes required in your storefront.</p>
+                    </div>
+                    <div class="hulo-help-card">
+                        <div class="hulo-help-num">2</div>
+                        <h4>Click a status card to filter</h4>
+                        <p>Sent, Failed, Pending — the counters above are clickable and filter the table below.</p>
+                    </div>
+                    <div class="hulo-help-card">
+                        <div class="hulo-help-num">3</div>
+                        <h4>Retry or replay any message</h4>
+                        <p>Click a row to open the message. From the details pane you can resend on failed deliveries.</p>
+                    </div>
+                </div>
+                <div class="hulo-help-links">
+                    <a href="https://huloglobal.com/vendure-plugins/email-tracking/docs/" target="_blank">Full docs ↗</a>
+                    <a href="https://huloglobal.com/vendure-plugins/email-tracking/" target="_blank">Plugin page ↗</a>
+                    <a href="mailto:support@huloglobal.com">Email support</a>
+                </div>
+            </div>
         </vdr-page-block>
 
         <vdr-page-block *ngIf="updateBanner">
@@ -247,6 +291,43 @@ interface EmailDetail extends EmailRow {
     `,
     styles: [`
         :host { color: var(--color-text-100, inherit); }
+
+        /* ── HULO shared hero + help pattern ─────────────────────── */
+        .hulo-hero {
+            display: flex; align-items: center; gap: 18px;
+            padding: 20px 22px; border-radius: 14px;
+            background: linear-gradient(135deg, #0f1419 0%, #1e293b 100%);
+            color: #fff;
+            box-shadow: 0 1px 3px rgba(15,23,42,.15), 0 8px 24px rgba(15,23,42,.08);
+        }
+        .hulo-hero-logo { flex: 0 0 auto; width: 56px; height: 56px; }
+        .hulo-hero-logo svg { width: 100%; height: 100%; display: block; }
+        .hulo-hero-text { flex: 1 1 auto; min-width: 0; }
+        .hulo-hero-title { color: #fff; font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+        .hulo-hero-sub { color: #cbd5e1; font-size: 13px; line-height: 1.5; margin: 4px 0 0; max-width: 640px; }
+        .hulo-hero-actions { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
+        .hulo-hero-actions .btn { color: #f8fafc; }
+        .hulo-hero-actions .btn:hover { color: #f59e0b; }
+        .hulo-help-btn clr-icon { margin-right: 4px; }
+        .hulo-help-drawer {
+            background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px;
+            padding: 20px 22px; color: #451a03;
+        }
+        .hulo-help-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+        .hulo-help-card { background: #ffffff; border-radius: 10px; padding: 16px; }
+        .hulo-help-num { width: 24px; height: 24px; border-radius: 999px;
+            background: #f59e0b; color: #fff; font-weight: 700; font-size: 13px;
+            display: grid; place-items: center; margin-bottom: 8px; }
+        .hulo-help-card h4 { margin: 0 0 4px; font-size: 14px; color: #0f172a; }
+        .hulo-help-card p { margin: 0; font-size: 13px; line-height: 1.5; color: #475569; }
+        .hulo-help-links { margin-top: 16px; padding-top: 14px; border-top: 1px solid #fde68a; display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; }
+        .hulo-help-links a { color: #b45309; text-decoration: none; font-weight: 600; }
+        .hulo-help-links a:hover { text-decoration: underline; }
+        @media (max-width: 640px) {
+            .hulo-hero { flex-wrap: wrap; }
+            .hulo-hero-actions { width: 100%; justify-content: flex-end; }
+        }
+
         .summary-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
         .summary-card {
             flex: 1; min-width: 130px; padding: 14px 18px;
@@ -370,6 +451,8 @@ export class EmailLogComponent implements OnInit {
     detail: EmailDetail | null = null;
 
     updateBanner: { packageName: string; current: string; latest: string; isMajor: boolean } | null = null;
+    /** Toggles the shared HULO help drawer under the hero. */
+    helpOpen = false;
     private dismissKey = 'huloglobal-email-tracking-update-dismissed';
 
     constructor(
