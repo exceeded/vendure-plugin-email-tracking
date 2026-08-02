@@ -38,7 +38,14 @@ describe('@huloglobal/vendure-plugin-email-tracking', () => {
         expect(count).toBe(0);
     });
 
-    it('records an open and serves the 1×1 GIF', async () => {
+    it('always serves the 1×1 GIF but does not record opens when unlicensed', async () => {
+        // Two contracts verified on this unlicensed instance:
+        //   1. The pixel is ALWAYS served (200, real GIF bytes) so emails
+        //      never show a broken image and we never leak whether the id
+        //      or signature was valid.
+        //   2. Open tracking is a paid feature — without a licence the open
+        //      must NOT be recorded (openCount stays 0). This is the gate
+        //      that makes the plugin commercially viable.
         const conn: TransactionalConnection = (server as any).app.get(TransactionalConnection);
         const repo = conn.rawConnection.getRepository(EmailLog);
         const row = await repo.save(repo.create({
@@ -58,16 +65,15 @@ describe('@huloglobal/vendure-plugin-email-tracking', () => {
         expect(res.headers.get('content-type')).toBe('image/gif');
         const body = Buffer.from(await res.arrayBuffer());
         expect(body.length).toBeGreaterThan(20);
+        // No-store so privacy prefetchers are re-counted per fetch once licensed.
+        expect(res.headers.get('cache-control')).toContain('no-store');
 
-        // recordOpen() is fire-and-forget from the controller, give it a moment.
+        // recordOpen() is fire-and-forget; give it a moment, then confirm the
+        // licence gate held — nothing was recorded.
         await new Promise(r => setTimeout(r, 150));
         const reloaded = await repo.findOne({ where: { id: row.id } });
-        expect(reloaded?.openCount).toBe(1);
-
-        // Open history (new in 0.2.0) — every pixel hit appends to opensJson.
-        const opens = JSON.parse(reloaded?.opensJson || '[]');
-        expect(opens.length).toBe(1);
-        expect(opens[0].ts).toBeTruthy();
+        expect(reloaded?.openCount).toBe(0);
+        expect(JSON.parse(reloaded?.opensJson || '[]')).toHaveLength(0);
     });
 
     it('rejects click redirect to invalid url and accepts a valid one', async () => {
