@@ -22,7 +22,9 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepublishOnly": "yarn build"
+    "prepublishOnly": "yarn build",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@huloglobal/vendure-licence-sdk": "^0.6.0",
@@ -43,7 +45,8 @@
     "@vendure/email-plugin": "^3.6.0",
     "nodemailer": "^6.9.0",
     "typeorm": "^0.3.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
   },
   "keywords": [
     "vendure",
