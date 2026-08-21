@@ -108,6 +108,10 @@ export function startEvaluation(packageName: string, packageVersion: string): vo
     }
 }
 
+export function stopEvaluation(): void {
+    evalClient?.stop();
+}
+
 export function getEvalState(): EvaluationState | null {
     return evalClient?.getState() ?? null;
 }

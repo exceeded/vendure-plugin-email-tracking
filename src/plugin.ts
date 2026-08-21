@@ -1,5 +1,5 @@
-import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure } from '@huloglobal/vendure-licence-sdk';
+import { PluginCommonModule, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
+import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, LicenceStore, LicenceStatus } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailLink } from './email-link.entity';
@@ -7,7 +7,7 @@ import { EmailLinkService } from './email-link.service';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
-import { EmailTrackingPluginOptions, setLicenceStatus, setOptions, startEvaluation } from './options';
+import { EmailTrackingPluginOptions, setLicenceStatus, setOptions, startEvaluation, getLicenceStatus, stopEvaluation } from './options';
 import { EmailTrackingAdminResolver, emailTrackingAdminApiSchema } from './admin-api';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -75,6 +75,47 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
     },
 })
 export class EmailTrackingPlugin {
+    private static licenceHost = '';
+
+    /** Verify + apply a licence key at runtime (admin-UI activation). */
+    static activateRuntimeLicence(key: string): LicenceStatus {
+        const status = verifyLicence({
+            licenceKey: key, pluginId: PLUGIN_ID, host: EmailTrackingPlugin.licenceHost,
+            publicKey: HULO_PUBLIC_KEY, revokedIds: EmailTrackingPlugin.revocation?.getRevokedIds(),
+        });
+        if (status.valid) {
+            setLicenceStatus(status);
+            stopEvaluation();
+        }
+        return status;
+    }
+
+    /** Drop an admin-activated key: back to unlicensed + evaluation. */
+    static deactivateRuntimeLicence(): void {
+        setLicenceStatus({
+            valid: false,
+            message: 'No licence key configured. The plugin will run in unlicensed (degraded) mode.',
+        } as LicenceStatus);
+        startEvaluation(PKG_NAME, PKG_VERSION);
+    }
+
+    constructor(private connection: TransactionalConnection) {}
+
+    /** Apply an admin-activated licence key persisted in the DB. */
+    async onApplicationBootstrap() {
+        if (getLicenceStatus()?.valid) return;
+        try {
+            const store = new LicenceStore((sql, params) => this.connection.rawConnection.query(sql, params));
+            await store.ensureTable();
+            const stored = await store.load(PLUGIN_ID);
+            if (stored) {
+                const st = EmailTrackingPlugin.activateRuntimeLicence(stored);
+                // eslint-disable-next-line no-console
+                if (st.valid) console.log(`[${PKG_NAME}] licence restored from admin activation — ${st.message}`);
+            }
+        } catch { /* store failures never affect boot */ }
+    }
+
     private static revocation: RevocationChecker | null = null;
     private static updateChecker: UpdateChecker | null = null;
     private static heartbeat: Heartbeat | null = null;
@@ -109,6 +150,7 @@ export class EmailTrackingPlugin {
 
         const host = (options.publicBaseUrl || '')
             .replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        EmailTrackingPlugin.licenceHost = host;
         const status = verifyLicence({
             licenceKey: options.licenceKey,
             pluginId: PLUGIN_ID,
