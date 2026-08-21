@@ -7,7 +7,7 @@ import { EmailLinkService } from './email-link.service';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
-import { EmailTrackingPluginOptions, setLicenceStatus, setOptions } from './options';
+import { EmailTrackingPluginOptions, setLicenceStatus, setOptions, startEvaluation } from './options';
 import { EmailTrackingAdminResolver, emailTrackingAdminApiSchema } from './admin-api';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -119,6 +119,9 @@ export class EmailTrackingPlugin {
         setLicenceStatus(status);
 
         if (!status.valid) {
+            // Unlicensed: start the server-anchored 14-day full-featured
+            // evaluation; premium paths stay on until it expires.
+            startEvaluation(PKG_NAME, PKG_VERSION);
             // eslint-disable-next-line no-console
             console.warn(
                 `[@huloglobal/vendure-plugin-email-tracking] ${status.message}` +

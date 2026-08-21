@@ -17,7 +17,7 @@ import { isLicensed, premiumFeatureError } from '@huloglobal/vendure-licence-sdk
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
-import { getLicenceStatus } from './options';
+import { getLicenceStatus, hasPremiumAccess } from './options';
 
 export const emailTrackingAdminApiSchema = gql`
     type HuloEmailLog {
@@ -168,7 +168,7 @@ export class EmailTrackingAdminResolver {
     @Query()
     @Allow(Permission.ReadCustomer)
     async huloEmailStatsByTemplate(@Args('days') daysInput?: number): Promise<any> {
-        if (!isLicensed(getLicenceStatus())) {
+        if (!hasPremiumAccess()) {
             throw new Error(premiumFeatureError('vendure-plugin-email-tracking').message);
         }
         const days = Math.min(Math.max(Number(daysInput) || 30, 1), 365);

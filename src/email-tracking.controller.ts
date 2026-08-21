@@ -14,7 +14,7 @@ import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingPlugin } from './plugin';
-import { getOptions, getLicenceStatus } from './options';
+import { getOptions, getLicenceStatus, hasPremiumAccess } from './options';
 
 const loggerCtx = 'EmailTrackingController';
 
@@ -98,7 +98,7 @@ export class EmailTrackingController {
         }
 
         const id = this.resolveSignedId(token);
-        if (id !== null && isLicensed(getLicenceStatus())) {
+        if (id !== null && hasPremiumAccess()) {
             // Open tracking is a paid feature. Unlicensed installs still
             // serve the pixel (so emails don't show a broken image) but
             // do not record the open.
@@ -142,7 +142,7 @@ export class EmailTrackingController {
         }
 
         const id = this.resolveSignedId(token);
-        if (id !== null && isLicensed(getLicenceStatus())) {
+        if (id !== null && hasPremiumAccess()) {
             // Click tracking is paid. Unlicensed mode still redirects
             // (we don't break the customer's email) but doesn't log.
             await this.tracking.recordClick(id, url, ip, req.headers['user-agent'] as string || null)
@@ -310,7 +310,7 @@ export class EmailTrackingController {
     @Get('log/stats/by-template')
     async byTemplate(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res, false)) return;
-        if (!isLicensed(getLicenceStatus())) {
+        if (!hasPremiumAccess()) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-email-tracking'));
         }
         const days = Math.min(Math.max(parseInt((req.query as any).fromDays, 10) || 30, 1), 365);
@@ -342,7 +342,7 @@ export class EmailTrackingController {
     @Get('log/export.csv')
     async exportCsv(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res, false)) return;
-        if (!isLicensed(getLicenceStatus())) {
+        if (!hasPremiumAccess()) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-email-tracking'));
         }
         const q = req.query as any;

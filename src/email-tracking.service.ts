@@ -5,7 +5,7 @@ import * as nodemailer from 'nodemailer';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { lookupGeo } from './geo-lookup';
-import { getLicenceStatus, getOptions, ownTrackingPrefixes, trackingBaseUrl } from './options';
+import { getLicenceStatus, getOptions, ownTrackingPrefixes, trackingBaseUrl, hasPremiumAccess } from './options';
 import { parseEmailClient } from './parse-ua';
 
 const loggerCtx = 'EmailTrackingService';
@@ -279,7 +279,7 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
         // installs always return false here so the suppression rows
         // are visible in the admin UI but not consulted on send —
         // matches the privacy boundary "we don't gate your own emails".
-        if (!isLicensed(getLicenceStatus())) return false;
+        if (!hasPremiumAccess()) return false;
         if (!recipient) return false;
         const repo = this.connection.rawConnection.getRepository(EmailSuppression);
         const row = await repo.findOne({ where: { recipient: recipient.toLowerCase() } });

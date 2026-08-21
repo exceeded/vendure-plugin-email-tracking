@@ -1,4 +1,4 @@
-import { LicenceStatus, RetentionOptions } from '@huloglobal/vendure-licence-sdk';
+import { EvaluationClient, EvaluationState, LicenceStatus, RetentionOptions } from '@huloglobal/vendure-licence-sdk';
 
 export interface EmailTrackingPluginOptions {
     /** Public host of the Vendure server. Embedded in outgoing pixel +
@@ -96,6 +96,31 @@ export function getOptions(): EmailTrackingPluginOptions {
 
 export function setLicenceStatus(status: LicenceStatus): void {
     cachedStatus = status;
+}
+
+let evalClient: EvaluationClient | null = null;
+
+/** Start the server-anchored 14-day evaluation for unlicensed installs. */
+export function startEvaluation(packageName: string, packageVersion: string): void {
+    if (!evalClient) {
+        evalClient = new EvaluationClient({ packageName, packageVersion });
+        evalClient.start();
+    }
+}
+
+export function getEvalState(): EvaluationState | null {
+    return evalClient?.getState() ?? null;
+}
+
+export function getEvalInstanceId(): string | null {
+    return evalClient?.getInstanceId() ?? null;
+}
+
+/** Licensed installs AND installs inside the evaluation window get the
+ *  full feature set. */
+export function hasPremiumAccess(): boolean {
+    if (getLicenceStatus()?.valid) return true;
+    return !!evalClient?.getState()?.active;
 }
 
 export function getLicenceStatus(): LicenceStatus | null {
