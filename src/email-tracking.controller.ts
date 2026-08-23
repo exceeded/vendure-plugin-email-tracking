@@ -7,7 +7,7 @@ import {
     premiumFeatureError,
     RateLimiter,
     verifyHmacSha256,
-    verifySignedValue, LicenceStore } from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
 import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
@@ -83,7 +83,22 @@ export class EmailTrackingController {
             eval: ev,
             pkg: PLUGIN_ID_FOR_STORE,
             update: updater ? updater.getStatus() : null,
+            selfUpdate: selfUpdateEnv(),
         });
+    }
+
+    /** One-click in-app update (owner-approved feature): installs a
+     *  registry-verified version of THIS plugin via the host's package
+     *  manager and restarts under the process supervisor. Admin-only;
+     *  package name is hard-coded; HULO_SELF_UPDATE=off disables. */
+    @Post('update/run')
+    async updateRun(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, true)) return;
+        const updater = EmailTrackingPlugin.getUpdateChecker();
+        const target = String(body?.version || updater?.getStatus()?.latest || '').trim();
+        if (!target) return res.status(400).json({ ok: false, message: 'No target version known yet — the registry check runs daily; try again shortly.' });
+        const result = await performSelfUpdate({ packageName: '@huloglobal/vendure-plugin-email-tracking', targetVersion: target });
+        return res.status(result.ok ? 200 : 400).json(result);
     }
 
     /** Admin-UI licence activation: paste-a-key, verified with the exact
