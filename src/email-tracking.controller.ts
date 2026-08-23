@@ -75,11 +75,14 @@ export class EmailTrackingController {
         if (!requireAdmin(ctx, res, false)) return;
         const licence = getLicenceStatus();
         const ev = getEvalState();
+        const updater = EmailTrackingPlugin.getUpdateChecker();
         return res.json({
             licensed: !!licence?.valid,
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
             tier: licence?.valid ? 'paid' : (ev?.active ? 'trial' : 'free'),
             eval: ev,
+            pkg: PLUGIN_ID_FOR_STORE,
+            update: updater ? updater.getStatus() : null,
         });
     }
 
