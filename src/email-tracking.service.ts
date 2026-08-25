@@ -1,5 +1,5 @@
 import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { hashIp, isLicensed, signValue, startRetentionSweeper } from '@huloglobal/vendure-licence-sdk';
+import { hashIp, isLicensed, signValue, startRetentionSweeper, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import * as nodemailer from 'nodemailer';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
@@ -36,7 +36,7 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
         const opts = getOptions();
         if (!opts.retention) return;
         this.stopRetention = startRetentionSweeper({
-            getConnection: () => this.connection.rawConnection,
+            getConnection: () => adapterFor(this.connection.rawConnection),
             table: 'email_log',
             options: opts.retention,
             label: 'email-tracking',

@@ -4,6 +4,7 @@ import { EmailDetails, EmailTransportOptions } from '@vendure/email-plugin/lib/s
 import { NodemailerEmailSender } from '@vendure/email-plugin/lib/src/sender/nodemailer-email-sender';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
 import { ownTrackingPrefixes, trackingBaseUrl } from './options';
+import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 
 const loggerCtx = 'TrackingEmailSender';
 
@@ -118,7 +119,7 @@ export class TrackingEmailSender implements EmailSender {
         code: string,
     ): Promise<{ orderId: number; customerId: number | null } | null> {
         try {
-            const rows: any[] = await this.connection.rawConnection.query(
+            const rows: any[] = await adapterFor(this.connection.rawConnection).query(
                 'SELECT id, customerId FROM `order` WHERE code = ? LIMIT 1',
                 [code],
             );
@@ -144,7 +145,7 @@ export class TrackingEmailSender implements EmailSender {
         const clean = (recipient || '').split(',')[0].trim().replace(/^.*<|>.*$/g, '').trim();
         if (!clean || !clean.includes('@')) return null;
         try {
-            const rows: any[] = await this.connection.rawConnection.query(
+            const rows: any[] = await adapterFor(this.connection.rawConnection).query(
                 'SELECT id FROM customer WHERE LOWER(emailAddress) = LOWER(?) AND deletedAt IS NULL LIMIT 1',
                 [clean],
             );

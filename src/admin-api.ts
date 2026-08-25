@@ -13,7 +13,7 @@ import { Injectable } from '@nestjs/common';
 import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { gql } from 'graphql-tag';
 import { Allow, Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
-import { isLicensed, premiumFeatureError } from '@huloglobal/vendure-licence-sdk';
+import { isLicensed, premiumFeatureError, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
@@ -144,14 +144,14 @@ export class EmailTrackingAdminResolver {
         if (f.to)         { where.push('createdAt <= ?'); params.push(new Date(f.to)); }
         const w = where.length ? ` WHERE ${where.join(' AND ')}` : '';
 
-        const items = await this.connection.rawConnection.query(
+        const items = await adapterFor(this.connection.rawConnection).query(
             `SELECT id, createdAt, type, recipient, subject, status, openCount, clickCount,
                     customerId, orderId, orderCode, invoiceId, smtpMessageId, errorMessage,
                     firstOpenedAt, lastOpenedAt, firstClickedAt, lastClickedAt
              FROM email_log${w} ORDER BY id DESC LIMIT ? OFFSET ?`,
             [...params, take, skip],
         );
-        const totals = await this.connection.rawConnection.query(
+        const totals = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(*) AS n FROM email_log${w}`, params,
         );
         return { items, totalItems: Number((totals as any[])[0]?.n) || 0 };
@@ -172,7 +172,7 @@ export class EmailTrackingAdminResolver {
             throw new Error(premiumFeatureError('vendure-plugin-email-tracking').message);
         }
         const days = Math.min(Math.max(Number(daysInput) || 30, 1), 365);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT type,
                     COUNT(*)                                   AS sent,
                     SUM(openCount > 0)                         AS opened,

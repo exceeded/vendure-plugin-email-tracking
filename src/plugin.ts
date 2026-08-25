@@ -1,5 +1,5 @@
 import { PluginCommonModule, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
-import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, LicenceStore, LicenceStatus } from '@huloglobal/vendure-licence-sdk';
+import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, LicenceStore, LicenceStatus, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailLink } from './email-link.entity';
@@ -105,7 +105,7 @@ export class EmailTrackingPlugin {
     async onApplicationBootstrap() {
         if (getLicenceStatus()?.valid) return;
         try {
-            const store = new LicenceStore((sql, params) => this.connection.rawConnection.query(sql, params));
+            const store = new LicenceStore((sql, params) => adapterFor(this.connection.rawConnection).query(sql, params));
             await store.ensureTable();
             const stored = await store.load(PLUGIN_ID);
             if (stored) {

@@ -7,7 +7,7 @@ import {
     premiumFeatureError,
     RateLimiter,
     verifyHmacSha256,
-    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
@@ -67,7 +67,7 @@ export class EmailTrackingController {
      * GET /email-track/status
      */
 
-    private licenceStore = new LicenceStore((sql: string, params?: any[]) => this.connection.rawConnection.query(sql, params));
+    private licenceStore = new LicenceStore((sql: string, params?: any[]) => adapterFor(this.connection.rawConnection).query(sql, params));
 
     /** Licence/evaluation state for the admin banner. */
     @Get('licence/status')
@@ -311,7 +311,7 @@ export class EmailTrackingController {
         if (q.to) { where.push('createdAt <= ?'); params.push(new Date(String(q.to))); }
 
         const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT id, createdAt, type, recipient, subject, status,
                     customerId, orderId, orderCode, invoiceId, applicationId,
                     channelId, openCount, firstOpenedAt, lastOpenedAt,
@@ -322,7 +322,7 @@ export class EmailTrackingController {
              LIMIT ? OFFSET ?`,
             [...params, take, skip],
         );
-        const [{ total }] = await this.connection.rawConnection.query(
+        const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(*) AS total FROM email_log${whereClause}`, params,
         );
         return res.json({ items: rows, total: Number(total) || 0, take, skip });
@@ -333,7 +333,7 @@ export class EmailTrackingController {
     async logSummary(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res, false)) return;
         const fromDays = parseInt((req.query as any).fromDays, 10) || 30;
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT status, COUNT(*) AS n, SUM(openCount) AS opens, SUM(clickCount) AS clicks
              FROM email_log
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
@@ -373,7 +373,7 @@ export class EmailTrackingController {
             return res.status(402).json(premiumFeatureError('vendure-plugin-email-tracking'));
         }
         const days = Math.min(Math.max(parseInt((req.query as any).fromDays, 10) || 30, 1), 365);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT type,
                     COUNT(*)                                   AS sent,
                     SUM(openCount > 0)                         AS opened,
@@ -416,7 +416,7 @@ export class EmailTrackingController {
         if (q.from) { where.push('createdAt >= ?'); params.push(new Date(String(q.from))); }
         if (q.to) { where.push('createdAt <= ?'); params.push(new Date(String(q.to))); }
         const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT createdAt, type, recipient, subject, status,
                     openCount, clickCount, customerId, orderCode, invoiceId,
                     smtpMessageId, errorMessage
