@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "graphql-tag": "^2.12.7",
-    "@huloglobal/vendure-licence-sdk": "^0.10.0"
+    "@huloglobal/vendure-licence-sdk": "^0.11.0"
   },
   "peerDependencies": {
     "@nestjs/common": ">=10.0.0",
