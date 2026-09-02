@@ -5,6 +5,11 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.2] — 2026-09-02
+
+### Changed
+- **Pricing.** Email Tracking is now £6.95/month, £69.50/year or £139 lifetime (was £9.95 / £99.50 / £199). README updated; the 14-day evaluation is unchanged.
+
 ## [0.12.1] — 2026-09-02
 
 ### Changed
