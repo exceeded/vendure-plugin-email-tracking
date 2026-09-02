@@ -7,13 +7,13 @@ import {
     premiumFeatureError,
     RateLimiter,
     verifyHmacSha256,
-    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor } from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor, PurchaseClaimClient } from '@huloglobal/vendure-licence-sdk';
 import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingPlugin } from './plugin';
-import { getOptions, getLicenceStatus, hasPremiumAccess, getEvalState } from './options';
+import { getOptions, getLicenceStatus, hasPremiumAccess, getEvalState, getEvalInstanceId } from './options';
 
 const loggerCtx = 'EmailTrackingController';
 
@@ -122,6 +122,57 @@ export class EmailTrackingController {
         await this.licenceStore.clear(PLUGIN_ID_FOR_STORE);
         EmailTrackingPlugin.deactivateRuntimeLicence();
         return res.json({ licensed: false });
+    }
+
+    /** Buy-from-admin: mint a claim token and return the HULO buy-page
+     *  URL. Once checkout completes the licence server binds the claim to
+     *  the minted key and `licence/claim-status` installs it — no email
+     *  round-trip, no .env edit, no restart. */
+    @Post('licence/purchase-link')
+    async licencePurchaseLink(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, true)) return;
+        const plan = (['monthly', 'annual', 'lifetime'].includes(String(body?.plan)) ? String(body.plan) : 'annual') as 'monthly' | 'annual' | 'lifetime';
+        try {
+            const r = await this.purchaseClaimClient().createPurchaseLink(plan, String(body?.email || '').trim() || undefined);
+            return res.json({ url: r.url, state: 'pending' });
+        } catch (e: any) {
+            return res.status(500).json({ message: e?.message || 'Could not start the purchase — try again shortly.' });
+        }
+    }
+
+    /** Poll target for the admin page while a purchase is pending; with
+     *  `?check=1` it asks the licence server right now and installs the
+     *  key if it is ready. Installed claims are re-checked daily so a
+     *  renewed subscription key lands automatically too. */
+    @Get('licence/claim-status')
+    async licenceClaimStatus(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('check') check?: string) {
+        if (!requireAdmin(ctx, res, false)) return;
+        const client = this.purchaseClaimClient();
+        const st = check ? await client.checkNow() : await client.status();
+        return res.json({ ...st, licensed: !!getLicenceStatus()?.valid });
+    }
+
+    /** Buy-from-admin auto-install client. */
+    private purchaseClaim: PurchaseClaimClient | null = null;
+    private purchaseClaimClient(): PurchaseClaimClient {
+        if (!this.purchaseClaim) {
+            this.purchaseClaim = new PurchaseClaimClient({
+                packageName: EmailTrackingPlugin.getPackageName(),
+                instanceId: () => getEvalInstanceId(),
+                query: (sql, params, opts) => adapterFor(this.connection.rawConnection).query(sql, params, opts),
+                onLicence: async (key: string) => {
+                    const status = EmailTrackingPlugin.activateRuntimeLicence(key);
+                    if (!status.valid) return false;
+                    await this.licenceStore.ensureTable(); await this.licenceStore.save(PLUGIN_ID_FOR_STORE, key);
+                    return true;
+                },
+            });
+        }
+        return this.purchaseClaim;
+    }
+
+    async onApplicationBootstrap() {
+        await this.purchaseClaimClient().resume().catch(() => undefined);
     }
 
     @Get('status')
