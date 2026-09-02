@@ -7,7 +7,7 @@ import {
     premiumFeatureError,
     RateLimiter,
     verifyHmacSha256,
-    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor, PurchaseClaimClient } from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor, PurchaseClaimClient, evalInstanceId, describeLicence } from '@huloglobal/vendure-licence-sdk';
 import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
@@ -78,6 +78,7 @@ export class EmailTrackingController {
         const updater = EmailTrackingPlugin.getUpdateChecker();
         return res.json({
             licensed: !!licence?.valid,
+            licence: describeLicence(licence),
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
             tier: licence?.valid ? 'paid' : (ev?.active ? 'trial' : 'free'),
             eval: ev,
@@ -152,13 +153,26 @@ export class EmailTrackingController {
         return res.json({ ...st, licensed: !!getLicenceStatus()?.valid });
     }
 
+    /** Stripe billing portal (update card, cancel, switch plan) for the
+     *  subscription behind this install's licence. Ownership is proven by
+     *  the buy-from-admin claim or by the stored licence key itself. */
+    @Post('licence/portal-link')
+    async licencePortalLink(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, true)) return;
+        let storedKey: string | null = null;
+        try { storedKey = await this.licenceStore.load(PLUGIN_ID_FOR_STORE); } catch { storedKey = null; }
+        const url = await this.purchaseClaimClient().billingPortalUrl(storedKey);
+        if (!url) return res.status(404).json({ message: 'No billing portal is available for this licence (lifetime and master licences have nothing to manage; for a key set via the environment, reply to your receipt email for a portal link).' });
+        return res.json({ url });
+    }
+
     /** Buy-from-admin auto-install client. */
     private purchaseClaim: PurchaseClaimClient | null = null;
     private purchaseClaimClient(): PurchaseClaimClient {
         if (!this.purchaseClaim) {
             this.purchaseClaim = new PurchaseClaimClient({
                 packageName: EmailTrackingPlugin.getPackageName(),
-                instanceId: () => getEvalInstanceId(),
+                instanceId: () => evalInstanceId(),
                 query: (sql, params, opts) => adapterFor(this.connection.rawConnection).query(sql, params, opts),
                 onLicence: async (key: string) => {
                     const status = EmailTrackingPlugin.activateRuntimeLicence(key);
