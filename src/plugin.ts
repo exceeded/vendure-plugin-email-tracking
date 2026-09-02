@@ -161,7 +161,7 @@ export class EmailTrackingPlugin {
         setLicenceStatus(status);
 
         if (!status.valid) {
-            // Unlicensed: start the server-anchored 14-day full-featured
+            // Unlicensed: register the install (no premium is granted by this; the 14-day
             // evaluation; premium paths stay on until it expires.
             startEvaluation(PKG_NAME, PKG_VERSION);
             // eslint-disable-next-line no-console
