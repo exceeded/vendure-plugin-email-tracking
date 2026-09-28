@@ -8,6 +8,47 @@ import { adapterFor, signValue } from '@huloglobal/vendure-licence-sdk';
 
 const loggerCtx = 'TrackingEmailSender';
 
+/** Where `CapturingSender` parks nodemailer's `info` for the send in flight. */
+const SMTP_INFO = Symbol('huloSmtpInfo');
+
+interface SmtpInfo { messageId?: string; response?: string; }
+
+/**
+ * `NodemailerEmailSender.send()` discards the `info` nodemailer returns
+ * (Message-ID + SMTP response), which the bounce webhook needs to match a
+ * DSN back to the log row. This subclass keeps it on the `EmailDetails`
+ * object of that very send (never on the shared sender), so concurrent
+ * job-queue sends cannot mix results up. `sendMail` is private in the
+ * upstream typings, hence the instance override rather than a method.
+ */
+export class CapturingSender extends NodemailerEmailSender {
+    constructor() {
+        super();
+        const base = (NodemailerEmailSender.prototype as any).sendMail;
+        if (typeof base !== 'function') return;
+        (this as any).sendMail = async (email: EmailDetails, transporter: any) => {
+            const info = await base.call(this, email, transporter);
+            if (info && typeof info === 'object') (email as any)[SMTP_INFO] = info;
+            return info;
+        };
+    }
+
+    /** The captured info for this `EmailDetails`, removed on read. */
+    takeInfo(email: EmailDetails): SmtpInfo | null {
+        const info = (email as any)[SMTP_INFO] || null;
+        delete (email as any)[SMTP_INFO];
+        return info;
+    }
+}
+
+/** `sent` / `deferred` / `failed` from the SMTP reply code, like `sendTracked`. */
+export function statusFromSmtpResponse(response: string | undefined): EmailLogStatus {
+    const code = parseInt(String(response || '').split(' ')[0], 10);
+    if (code >= 500) return 'failed';
+    if (code >= 400) return 'deferred';
+    return 'sent';
+}
+
 /**
  * Wraps the default NodemailerEmailSender so every send by the Vendure
  * email-plugin (order confirmation, password reset, OTP, invoice, etc.)
@@ -18,7 +59,7 @@ const loggerCtx = 'TrackingEmailSender';
  * mutate the body in-place before delegating, and persist the row.
  */
 export class TrackingEmailSender implements EmailSender {
-    private inner = new NodemailerEmailSender();
+    private inner = new CapturingSender();
     private connection!: TransactionalConnection;
 
     init(injector: Injector) {
@@ -95,9 +136,23 @@ export class TrackingEmailSender implements EmailSender {
             if (saved) {
                 saved.status = 'failed';
                 saved.errorMessage = String(e?.message || e).slice(0, 2000);
+                saved.smtpResponse = e?.response ? String(e.response).slice(0, 500) : saved.smtpResponse;
                 try { await repo.save(saved); } catch { /* the SMTP error is the one to surface */ }
             }
             throw e;
+        }
+        // Message-ID + SMTP reply onto the row so bounces (`/email-track/bounce`) can find it.
+        const info = this.inner.takeInfo(email);
+        if (saved && info) {
+            try {
+                await repo.update(saved.id, {
+                    smtpMessageId: String(info.messageId || '').replace(/^<|>$/g, '').slice(0, 500),
+                    smtpResponse: String(info.response || '').slice(0, 500),
+                    status: statusFromSmtpResponse(info.response),
+                });
+            } catch (e: any) {
+                Logger.warn(`smtp result could not be recorded on email #${saved.id}: ${e?.message}`, loggerCtx);
+            }
         }
         if (saved) Logger.info(`Tracked plugin-email [${saved.type}] to ${saved.recipient} (id=${saved.id})`, loggerCtx);
     }

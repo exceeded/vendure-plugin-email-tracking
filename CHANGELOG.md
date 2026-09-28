@@ -5,6 +5,47 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3] — 2026-09-28
+
+Follow-up to the 0.14.2 hardening pass. No new tables or columns.
+
+### Added
+- **Signing secret on by default.** Without `signingSecret` a random
+  per-install secret is generated once at boot and stored in
+  `hulo_licence_store` (key `vendure-plugin-email-tracking:signing-secret`;
+  first writer wins so server and worker sign and verify alike), then
+  applied as if configured. Bare-id links in already-sent emails behave
+  exactly as in 0.14.2 (pixel served, clicks to own hosts only). A boot
+  warning explains that setting `signingSecret` keeps links valid across
+  reinstalls. A generated secret is never used to authenticate the bounce
+  webhook.
+- **Per-link tokens are live.** `/email-track/click/:token` accepts the
+  64-hex tokens minted by `EmailLinkService.issueLinkToken()` (`?u=…&s=…`):
+  the row must exist and be unexpired, and both the HMAC and the stored
+  destination hash must match, so the token binds its URL. Sensitive links
+  are recorded by their redacted form. `EmailLinkService` signs with the
+  env override, else the plugin's `signingSecret`.
+- Postgres corpus test (`src/pg-corpus.test.ts`, runs when `HULO_PG_URL`
+  is set): every raw SQL statement in `src/` is translated by the dialect
+  adapter and executed against PostgreSQL 17 with TypeORM-quoted stand-ins.
+
+### Fixed
+- **Bounces could not be matched to pipeline mail.** `TrackingEmailSender`
+  delegated to `NodemailerEmailSender`, which discards nodemailer's result,
+  so rows for order confirmations, OTPs and password resets never had a
+  `smtpMessageId`/`smtpResponse`. A `CapturingSender` subclass keeps the
+  result per send; the row now gets the Message-ID (stored without angle
+  brackets, also for `sendTracked`) and the SMTP reply, and its status is
+  set from the reply code like `sendTracked` does.
+
+### Changed
+- **Retention** is now plugin-side: it runs daily on the worker only,
+  deletes `email_log` in batches of 5 000 (oldest id first, short pause
+  between batches) instead of one unbounded statement, applies `maxRows`
+  the same way, and prunes `email_link` rows past `expiresAt` or older
+  than `days`.
+- Tests are no longer compiled into `dist`.
+
 ## [0.14.2] — 2026-09-28
 
 Reliability and security pass — no new features. Three indexes on

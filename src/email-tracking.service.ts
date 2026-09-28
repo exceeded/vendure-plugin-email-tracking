@@ -1,6 +1,6 @@
 import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { hashIp, isLicensed, signValue, startRetentionSweeper, adapterFor } from '@huloglobal/vendure-licence-sdk';
-import { Logger, TransactionalConnection } from '@vendure/core';
+import { hashIp, isLicensed, signValue, adapterFor, DbAdapter } from '@huloglobal/vendure-licence-sdk';
+import { Logger, ProcessContext, TransactionalConnection } from '@vendure/core';
 import * as nodemailer from 'nodemailer';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
@@ -24,28 +24,98 @@ interface SendTrackedMeta {
     applicationId?: number;
 }
 
+/** Rows deleted per statement by the retention sweeper. */
+export const RETENTION_BATCH = 5000;
+/** Batches per sweep (1 000 000 rows); the next daily run continues. */
+const RETENTION_MAX_BATCHES = 200;
+
+/**
+ * Delete matching rows `RETENTION_BATCH` at a time, oldest id first, until
+ * a batch comes back short. One unbounded `DELETE` on a large `email_log`
+ * holds locks for the whole scan and stalls the sender; small batches with
+ * a pause between them do not. The derived-table form is valid on
+ * MariaDB/MySQL (which refuse `LIMIT` in a plain `IN` subquery) and on
+ * Postgres (which has no `DELETE … ORDER BY … LIMIT`).
+ */
+export async function batchedDelete(
+    db: Pick<DbAdapter, 'query'>,
+    table: 'email_log' | 'email_link',
+    where: string,
+    params: any[],
+    pauseMs = 50,
+): Promise<number> {
+    let total = 0;
+    for (let i = 0; i < RETENTION_MAX_BATCHES; i++) {
+        const res = await db.query(
+            `DELETE FROM ${table} WHERE id IN (SELECT id FROM (SELECT id FROM ${table} WHERE ${where} ORDER BY id ASC LIMIT ${RETENTION_BATCH}) AS batch)`,
+            params,
+            { needAffected: true },
+        );
+        const n = Number(res?.affectedRows ?? 0);
+        total += n;
+        if (n < RETENTION_BATCH) break;
+        if (pauseMs > 0) await new Promise(r => setTimeout(r, pauseMs));
+    }
+    return total;
+}
+
 @Injectable()
 export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDestroy {
-    private stopRetention: (() => void) | null = null;
+    private retentionTimer: NodeJS.Timeout | null = null;
+    private retentionFirst: NodeJS.Timeout | null = null;
 
-    constructor(private connection: TransactionalConnection) {}
+    constructor(private connection: TransactionalConnection, private processContext: ProcessContext) {}
 
     /** Called by Nest after every provider is initialised. Safe place to
-     *  start background sweepers that need DB access. */
+     *  start background sweepers that need DB access. The sweeper runs on
+     *  the worker only (the server answers pixels and clicks). */
     onApplicationBootstrap(): void {
         const opts = getOptions();
-        if (!opts.retention) return;
-        this.stopRetention = startRetentionSweeper({
-            getConnection: () => adapterFor(this.connection.rawConnection),
-            table: 'email_log',
-            options: opts.retention,
-            label: 'email-tracking',
-        });
+        const r = opts.retention;
+        if (!r || ((!r.days || r.days <= 0) && !r.maxRows)) return;
+        if (!this.processContext.isWorker) return;
+        const interval = Math.max(60_000, r.sweepIntervalMs ?? 24 * 60 * 60 * 1000);
+        this.retentionFirst = setTimeout(() => { void this.sweepRetention(); }, 60_000);
+        this.retentionTimer = setInterval(() => { void this.sweepRetention(); }, interval);
+        this.retentionFirst.unref?.();
+        this.retentionTimer.unref?.();
     }
 
     onModuleDestroy(): void {
-        this.stopRetention?.();
-        this.stopRetention = null;
+        if (this.retentionFirst) clearTimeout(this.retentionFirst);
+        if (this.retentionTimer) clearInterval(this.retentionTimer);
+        this.retentionFirst = null;
+        this.retentionTimer = null;
+    }
+
+    /** One retention pass: `email_log` older than `days` (and beyond `maxRows`),
+     *  `email_link` rows past `expiresAt` or older than `days`. */
+    async sweepRetention(): Promise<{ logs: number; links: number }> {
+        const r = getOptions().retention;
+        const db = adapterFor(this.connection.rawConnection);
+        const out = { logs: 0, links: 0 };
+        if (!r) return out;
+        try {
+            if (r.days && r.days > 0) {
+                out.logs += await batchedDelete(db, 'email_log', '`createdAt` < DATE_SUB(NOW(), INTERVAL ? DAY)', [r.days]);
+                out.links += await batchedDelete(db, 'email_link', '`createdAt` < DATE_SUB(NOW(), INTERVAL ? DAY)', [r.days]);
+            }
+            if (r.maxRows && r.maxRows > 0) {
+                const rows = await db.query('SELECT COUNT(*) AS n FROM email_log');
+                const over = Number(rows?.[0]?.n ?? 0) - r.maxRows;
+                if (over > 0) {
+                    // Oldest ids first; the cutoff id keeps every batch bounded.
+                    const edge = await db.query('SELECT id FROM email_log ORDER BY id ASC LIMIT 1 OFFSET ?', [over]);
+                    const cutoff = Number(edge?.[0]?.id ?? 0);
+                    if (cutoff > 0) out.logs += await batchedDelete(db, 'email_log', 'id < ?', [cutoff]);
+                }
+            }
+            out.links += await batchedDelete(db, 'email_link', '`expiresAt` IS NOT NULL AND `expiresAt` < NOW()', []);
+            if (out.logs || out.links) Logger.info(`retention: pruned ${out.logs} email_log and ${out.links} email_link row(s)`, loggerCtx);
+        } catch (e: any) {
+            Logger.warn(`retention sweep failed: ${e?.message}`, loggerCtx);
+        }
+        return out;
     }
 
     /**
@@ -119,7 +189,8 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
         try {
             const info = await transporter.sendMail(mail);
             saved.smtpResponse = String(info.response || '').slice(0, 500);
-            saved.smtpMessageId = String(info.messageId || '').slice(0, 500);
+            // Stored without angle brackets; the bounce matcher accepts both forms.
+            saved.smtpMessageId = String(info.messageId || '').replace(/^<|>$/g, '').slice(0, 500);
             // Gmail's "250 2.0.0 OK" → sent. 4xx → deferred. 5xx → failed.
             const code = parseInt((info.response || '').split(' ')[0], 10);
             if (code >= 500) saved.status = 'failed';

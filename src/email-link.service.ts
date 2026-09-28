@@ -7,6 +7,7 @@ import {
     ClassifierInput,
 } from '@huloglobal/vendure-licence-sdk';
 import { EmailLink, EmailLinkType } from './email-link.entity';
+import { getOptions } from './options';
 
 const loggerCtx = 'EmailLinkService';
 
@@ -38,12 +39,21 @@ const loggerCtx = 'EmailLinkService';
 export class EmailLinkService {
     constructor(private connection: TransactionalConnection) {}
 
+    /** Env override, else the plugin's `signingSecret` (configured or generated at boot). */
     private signingSecret(): string {
         return (
             process.env.HULO_EMAIL_LINK_SIGNING_SECRET ||
             process.env.HULO_ORDER_ACTIVITY_SIGNING_SECRET ||
+            getOptions().signingSecret ||
             'hulo-email-link-default-signing-secret-set-env-in-prod'
         );
+    }
+
+    /** True when `destinationUrl` is the URL this row was minted for. */
+    destinationMatches(link: EmailLink, destinationUrl: string): boolean {
+        if (!link.destinationUrlHash) return true; // pre-hash rows
+        const hash = createHash('sha256').update(destinationUrl).digest('hex');
+        return hash === link.destinationUrlHash;
     }
 
     /**

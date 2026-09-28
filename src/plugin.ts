@@ -1,4 +1,4 @@
-import { PluginCommonModule, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
+import { Logger, PluginCommonModule, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
 import { fingerprintPublicKey, Heartbeat, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, LicenceStore, LicenceStatus, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
@@ -7,7 +7,8 @@ import { EmailLinkService } from './email-link.service';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
-import { EmailTrackingPluginOptions, setLicenceStatus, setOptions, startEvaluation, getLicenceStatus, stopEvaluation } from './options';
+import { EmailTrackingPluginOptions, setLicenceStatus, setOptions, startEvaluation, getLicenceStatus, stopEvaluation, getOptions, applyGeneratedSigningSecret } from './options';
+import { ensureStoredSecret } from './stored-secret';
 import { EmailTrackingAdminResolver, emailTrackingAdminApiSchema } from './admin-api';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -28,6 +29,7 @@ UwIDAQAB
 -----END PUBLIC KEY-----`;
 
 const PLUGIN_ID = 'vendure-plugin-email-tracking';
+const SIGNING_SECRET_STORE_KEY = 'vendure-plugin-email-tracking:signing-secret';
 const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
     || 'https://elite.charity/licence/revoked.json';
 
@@ -101,11 +103,22 @@ export class EmailTrackingPlugin {
 
     constructor(private connection: TransactionalConnection) {}
 
-    /** Apply an admin-activated licence key persisted in the DB. */
+    /** Resolve the per-install signing secret (server and worker read the
+     *  same row) and apply an admin-activated licence key persisted in the DB. */
     async onApplicationBootstrap() {
+        const query = (sql: string, params?: any[], o?: any) => adapterFor(this.connection.rawConnection).query(sql, params, o);
+        const store = new LicenceStore(query);
+        if (!getOptions().signingSecret) {
+            const secret = await ensureStoredSecret(store, query, SIGNING_SECRET_STORE_KEY);
+            if (secret) {
+                applyGeneratedSigningSecret(secret);
+                Logger.warn(`email-tracking: no signingSecret configured — tracking links are signed with a generated per-install secret stored in hulo_licence_store (${SIGNING_SECRET_STORE_KEY}). Set signingSecret to keep links in already-sent emails valid across reinstalls and database restores.`, PKG_NAME);
+            } else {
+                Logger.warn('email-tracking: no signingSecret configured and the licence store is unavailable — tracking links stay unsigned', PKG_NAME);
+            }
+        }
         if (getLicenceStatus()?.valid) return;
         try {
-            const store = new LicenceStore((sql, params) => adapterFor(this.connection.rawConnection).query(sql, params));
             await store.ensureTable();
             const stored = await store.load(PLUGIN_ID);
             if (stored) {

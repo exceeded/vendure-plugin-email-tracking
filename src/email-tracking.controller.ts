@@ -12,8 +12,9 @@ import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { EmailTrackingService } from './email-tracking.service';
+import { EmailLinkService } from './email-link.service';
 import { EmailTrackingPlugin } from './plugin';
-import { getOptions, getLicenceStatus, hasPremiumAccess, getEvalState, getEvalInstanceId } from './options';
+import { getOptions, getLicenceStatus, hasPremiumAccess, getEvalState, getEvalInstanceId, configuredSigningSecret } from './options';
 
 const loggerCtx = 'EmailTrackingController';
 
@@ -87,6 +88,7 @@ export class EmailTrackingController {
     constructor(
         private connection: TransactionalConnection,
         private tracking: EmailTrackingService,
+        private links: EmailLinkService,
     ) {}
 
     /**
@@ -277,9 +279,13 @@ export class EmailTrackingController {
      * redirect to an empty / javascript: target).
      *
      * GET /email-track/click/:id?u=<encoded>
+     *
+     * Three token shapes: `<id>.<hmac>` (signed log id), a bare legacy id
+     * (own hosts only), or a 64-hex `EmailLinkService` token whose `s`
+     * signature and stored hash bind the destination to the row.
      */
     @Get('click/:token')
-    async click(@Param('token') token: string, @Query('u') u: string, @Req() req: Request, @Res() res: Response) {
+    async click(@Param('token') token: string, @Query('u') u: string, @Query('s') sig: string, @Req() req: Request, @Res() res: Response) {
         const ip = realIp(req);
         if (ip && !getLimiter().allow(`click|${ip}`)) {
             res.setHeader('Retry-After', '60');
@@ -295,6 +301,7 @@ export class EmailTrackingController {
             applySecurityHeaders(res);
             return res.status(400).send('Invalid redirect target');
         }
+        if (/^[0-9a-f]{64}$/.test(token)) return this.clickLinkToken(token, url, String(sig || ''), ip, req, res);
         const id = this.resolveSignedId(token);
         // Never redirect for a token we cannot tie to an email we sent: with a
         // signing secret that closes the open redirector completely. Legacy
@@ -321,6 +328,27 @@ export class EmailTrackingController {
         }
         res.setHeader('Cache-Control', 'no-store');
         applySecurityHeaders(res);
+        return res.redirect(302, url);
+    }
+
+    /** Per-link token minted by `EmailLinkService.issueLinkToken`: the row
+     *  must exist, be unexpired, and both the `s` HMAC and the stored
+     *  destination hash must match `u` — so the token cannot be pointed at
+     *  another URL. Sensitive links are recorded by their redacted form. */
+    private async clickLinkToken(token: string, url: string, sig: string, ip: string | null, req: Request, res: Response) {
+        applySecurityHeaders(res);
+        const link = await this.links.findLinkByToken(token);
+        if (!link) return res.status(404).send('Unknown link');
+        if (link.expiresAt && new Date(link.expiresAt).getTime() < Date.now()) return res.status(410).send('Link expired');
+        if (!this.links.verifyClickDestination(token, url, sig) || !this.links.destinationMatches(link, url)) {
+            return res.status(400).send('Invalid redirect target');
+        }
+        if (link.emailLogId && link.isTrackingEnabled !== false && hasPremiumAccess()) {
+            const recorded = link.isSensitive ? (link.destinationUrlRedacted || `[sensitive: ${link.destinationUrlHost || 'unknown'}]`) : url;
+            await this.tracking.recordClick(Number(link.emailLogId), recorded, ip, req.headers['user-agent'] as string || null)
+                .catch((e: any) => Logger.warn(`click log fail (link ${link.id}): ${e?.message}`, loggerCtx));
+        }
+        res.setHeader('Cache-Control', 'no-store');
         return res.redirect(302, url);
     }
 
@@ -369,8 +397,10 @@ export class EmailTrackingController {
         // secret the endpoint accepts unauthenticated POSTs (legacy
         // behaviour — strongly recommend setting bounceWebhookSecret in
         // production).
+        // A secret generated at boot is unknown to the sender, so only a
+        // configured one authenticates the webhook.
         const opts = getOptions();
-        const secret = opts.bounceWebhookSecret || opts.signingSecret;
+        const secret = opts.bounceWebhookSecret || configuredSigningSecret();
         if (!secret && !opts.allowUnauthenticatedBounceWebhook) {
             // Anyone who knows a Message-ID could otherwise mark mail bounced and suppress the customer.
             return res.status(503).json({ error: 'bounce webhook disabled: set bounceWebhookSecret (or allowUnauthenticatedBounceWebhook: true on a private network)' });

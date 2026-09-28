@@ -33,7 +33,7 @@ export const config: VendureConfig = {
             licenceKey: process.env.HULO_LICENCE_KEY_EMAIL_TRACKING,
 
             // -- Security (recommended in production) --
-            signingSecret: process.env.HULO_EMAIL_SIGNING_SECRET,
+            signingSecret: process.env.HULO_EMAIL_SIGNING_SECRET, // unset: generated once and stored in the DB
             bounceWebhookSecret: process.env.HULO_BOUNCE_WEBHOOK_SECRET,
             clickRedirectAllowedDomains: ['shop.example.com', '*.example.com'],
             hashIpsInHistory: true,            // default true
@@ -64,6 +64,15 @@ EmailTrackingPlugin.uiExtensions
 > unless you list proxy headers in `trustedIpHeaders`; unsigned click links
 > only redirect to your own hosts — set `signingSecret` for full tracking.
 
+> **Since 0.14.3:** links are always signed — without `signingSecret` a
+> random per-install secret is generated at boot and kept in
+> `hulo_licence_store` (key `vendure-plugin-email-tracking:signing-secret`,
+> shared by server and worker). Set `signingSecret` yourself to keep links in
+> already-sent emails valid across reinstalls and database restores. Emails
+> sent before any secret existed keep working (pixel served, clicks to your
+> own hosts only). Mail sent through the Vendure email pipeline now records
+> the SMTP Message-ID and reply, so the bounce webhook can match it.
+
 ## Feature tour
 
 ### Universal capture
@@ -75,11 +84,21 @@ your own plugin code and get the same engagement tracking.
 
 ### Open + click tracking with full history
 
-- **1×1 pixel** at `/email-track/open/:token.gif` — when `signingSecret` is
-  configured, the token is `<id>.<hmac>` and forged ids are rejected.
+- **1×1 pixel** at `/email-track/open/:token.gif` — the token is
+  `<id>.<hmac>` (signed with `signingSecret`, or the generated per-install
+  secret) and forged ids are rejected.
 - **Click redirector** at `/email-track/click/:token?u=…` — skips
   `mailto:`, `tel:`, `#`-anchors, and `unsubscribe`/`opt-out` links.
   Optional `clickRedirectAllowedDomains` denies open-redirector abuse.
+  Per-link tokens minted with `EmailLinkService.issueLinkToken()` (64-hex,
+  `?u=…&s=<hmac>`) are honoured too: the row must exist and be unexpired,
+  and both the signature and the stored destination hash must match `u`,
+  so a token cannot be pointed at another URL. Sensitive links are recorded
+  by their redacted form.
+- **Bounce matching for pipeline mail**: every send through
+  `TrackingEmailSender` records nodemailer's Message-ID (without angle
+  brackets) and SMTP reply on the row, and sets `sent` / `deferred` /
+  `failed` from the reply code.
 - **Per-row history** of the last 50 opens and clicks. Each entry includes
   timestamp, IP (raw or hashed), parsed email client (Gmail web, Outlook
   desktop, Apple Mail iOS, Thunderbird, …), bot flag for prefetch
@@ -101,8 +120,9 @@ your own plugin code and get the same engagement tracking.
 ### Bounce webhook
 
 - `POST /email-track/bounce` with `{ messageId, status, reason }`.
-- Verifies `X-Signature` (HMAC-SHA256) against `bounceWebhookSecret` or
-  `signingSecret`. Postmaster integrations stay loose-coupled.
+- Verifies `X-Signature` (HMAC-SHA256) against `bounceWebhookSecret` or a
+  *configured* `signingSecret` (a generated one is never used here, since
+  the sender could not know it). Postmaster integrations stay loose-coupled.
 
 ### Admin UI
 
@@ -129,8 +149,11 @@ your own plugin code and get the same engagement tracking.
 retention: { days: 180, maxRows: 1_000_000 }
 ```
 
-Sweeper runs once a day, drops the `.unref()` flag so it never blocks
-shutdown, and silently fails over on DB hiccups.
+The sweeper runs once a day on the worker only, deletes in batches of
+5 000 rows (oldest id first, with a short pause between batches so the
+sender is never stalled by one long DELETE), prunes `email_link` rows
+past their `expiresAt` or older than `days`, is `.unref()`'d so it never
+blocks shutdown, and fails soft on DB hiccups.
 
 ## HTTP endpoints
 

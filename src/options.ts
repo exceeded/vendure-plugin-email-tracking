@@ -22,8 +22,13 @@ export interface EmailTrackingPluginOptions {
      *   2. Verify bounce-webhook requests when no `bounceWebhookSecret`
      *      is set separately.
      *
-     * Strongly recommend setting this in production. When unset, the
-     * plugin falls back to unsigned URLs (legacy behaviour, less safe).
+     * When unset, a random secret is generated once at boot and stored in
+     * `hulo_licence_store` (key `vendure-plugin-email-tracking:signing-secret`,
+     * shared by server and worker), so new emails are always signed. Set
+     * it explicitly to keep already-sent links valid across reinstalls or
+     * database restores. Links sent before any secret existed (bare ids)
+     * keep working: the pixel is served and clicks redirect to your own
+     * hosts only. A generated secret is never used for the bounce webhook.
      */
     signingSecret?: string;
 
@@ -102,6 +107,25 @@ export function setOptions(opts: EmailTrackingPluginOptions): void {
 
 export function getOptions(): EmailTrackingPluginOptions {
     return cachedOptions;
+}
+
+let signingSecretGenerated = false;
+
+/** Apply the per-install secret generated at boot (only when none is configured). */
+export function applyGeneratedSigningSecret(secret: string): void {
+    if (cachedOptions.signingSecret) return;
+    cachedOptions = { ...cachedOptions, signingSecret: secret };
+    signingSecretGenerated = true;
+}
+
+export function isSigningSecretGenerated(): boolean {
+    return signingSecretGenerated;
+}
+
+/** The secret the operator configured — `undefined` when the active one was generated.
+ *  The bounce webhook only ever authenticates against a configured secret. */
+export function configuredSigningSecret(): string | undefined {
+    return signingSecretGenerated ? undefined : cachedOptions.signingSecret;
 }
 
 export function setLicenceStatus(status: LicenceStatus): void {

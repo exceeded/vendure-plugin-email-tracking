@@ -87,8 +87,17 @@ describe('@huloglobal/vendure-plugin-email-tracking', () => {
         const bad = await fetch(`http://localhost:${PORT}/email-track/click/${row.id}?u=javascript:alert(1)`);
         expect(bad.status).toBe(400);
 
-        const good = await fetch(`http://localhost:${PORT}/email-track/click/${row.id}?u=${encodeURIComponent('https://example.com/p')}`, { redirect: 'manual' });
+        // A bare (unsigned, legacy) id may only redirect to the shop's own hosts (since 0.14.2).
+        const foreign = await fetch(`http://localhost:${PORT}/email-track/click/${row.id}?u=${encodeURIComponent('https://example.com/p')}`, { redirect: 'manual' });
+        expect(foreign.status).toBe(400);
+
+        const own = `http://localhost:${PORT}/products/p`;
+        const good = await fetch(`http://localhost:${PORT}/email-track/click/${row.id}?u=${encodeURIComponent(own)}`, { redirect: 'manual' });
         expect([301, 302, 303, 307, 308]).toContain(good.status);
-        expect(good.headers.get('location')).toBe('https://example.com/p');
+        expect(good.headers.get('location')).toBe(own);
+
+        // An unknown per-link token (64-hex) is refused rather than redirected.
+        const unknown = await fetch(`http://localhost:${PORT}/email-track/click/${'a'.repeat(64)}?u=${encodeURIComponent(own)}&s=00`, { redirect: 'manual' });
+        expect(unknown.status).toBe(404);
     });
 });
