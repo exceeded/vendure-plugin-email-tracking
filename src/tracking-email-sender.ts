@@ -3,8 +3,8 @@ import { EmailSender } from '@vendure/email-plugin/lib/src/sender/email-sender';
 import { EmailDetails, EmailTransportOptions } from '@vendure/email-plugin/lib/src/types';
 import { NodemailerEmailSender } from '@vendure/email-plugin/lib/src/sender/nodemailer-email-sender';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
-import { ownTrackingPrefixes, trackingBaseUrl } from './options';
-import { adapterFor } from '@huloglobal/vendure-licence-sdk';
+import { getOptions, ownTrackingPrefixes, trackingBaseUrl } from './options';
+import { adapterFor, signValue } from '@huloglobal/vendure-licence-sdk';
 
 const loggerCtx = 'TrackingEmailSender';
 
@@ -58,12 +58,12 @@ export class TrackingEmailSender implements EmailSender {
             : null;
         const payload: Partial<EmailLog> = {
             type: this.inferType(email.subject),
-            recipient: (email.recipient || '').slice(0, 500),
-            subject: (email.subject || '').slice(0, 1000),
-            fromAddress: (email.from || '').slice(0, 500),
-            bcc: email.bcc?.slice(0, 500),
-            replyTo: email.replyTo?.slice(0, 500),
-            channelId: 1,
+            recipient: (email.recipient || '').slice(0, 255),
+            subject: (email.subject || '').slice(0, 512),
+            fromAddress: (email.from || '').slice(0, 255),
+            bcc: email.bcc?.slice(0, 255),
+            replyTo: email.replyTo?.slice(0, 255),
+            channelId: linkedIds?.channelId || 1,
             status: 'sent' as EmailLogStatus,
             tracked: true,
         };
@@ -71,25 +71,35 @@ export class TrackingEmailSender implements EmailSender {
         if (linkedIds?.orderId) payload.orderId = linkedIds.orderId;
         if (linkedIds?.customerId != null) payload.customerId = linkedIds.customerId;
         else if (customerIdByEmail != null) payload.customerId = customerIdByEmail;
-        const row = repo.create(payload);
-        const saved: EmailLog = await repo.save(row);
+        // The log row must never stop the email (OTP, password reset, order
+        // confirmation): a DB error here means "send untracked", not "fail".
+        let saved: EmailLog | null = null;
+        try {
+            saved = await repo.save(repo.create(payload));
+        } catch (e: any) {
+            Logger.warn(`email log row could not be written (sending untracked): ${e?.message}`, loggerCtx);
+        }
 
         // Rewrite + pixel-inject the html body in place.
-        try {
-            email.body = this.wrapHtml(email.body || '', Number(saved.id));
-        } catch (e: any) {
-            Logger.warn(`tracking wrap failed: ${e?.message}`, loggerCtx);
+        if (saved) {
+            try {
+                email.body = this.wrapHtml(email.body || '', Number(saved.id));
+            } catch (e: any) {
+                Logger.warn(`tracking wrap failed: ${e?.message}`, loggerCtx);
+            }
         }
 
         try {
             await this.inner.send(email, options);
         } catch (e: any) {
-            saved.status = 'failed';
-            saved.errorMessage = String(e?.message || e).slice(0, 2000);
-            await repo.save(saved);
+            if (saved) {
+                saved.status = 'failed';
+                saved.errorMessage = String(e?.message || e).slice(0, 2000);
+                try { await repo.save(saved); } catch { /* the SMTP error is the one to surface */ }
+            }
             throw e;
         }
-        Logger.info(`Tracked plugin-email [${saved.type}] to ${saved.recipient} (id=${saved.id})`, loggerCtx);
+        if (saved) Logger.info(`Tracked plugin-email [${saved.type}] to ${saved.recipient} (id=${saved.id})`, loggerCtx);
     }
 
     /**
@@ -117,10 +127,15 @@ export class TrackingEmailSender implements EmailSender {
      */
     private async lookupOrderIds(
         code: string,
-    ): Promise<{ orderId: number; customerId: number | null } | null> {
+    ): Promise<{ orderId: number; customerId: number | null; channelId: number | null } | null> {
         try {
+            // Backticks: Vendure's camelCase columns are quoted on Postgres. The
+            // channel is the order's own (non-default) channel when it has one.
             const rows: any[] = await adapterFor(this.connection.rawConnection).query(
-                'SELECT id, customerId FROM `order` WHERE code = ? LIMIT 1',
+                `SELECT o.id, o.\`customerId\`,
+                        (SELECT occ.\`channelId\` FROM order_channels_channel occ JOIN channel ch ON ch.id = occ.\`channelId\`
+                          WHERE occ.\`orderId\` = o.id ORDER BY (ch.code = '__default_channel__') ASC, occ.\`channelId\` DESC LIMIT 1) AS channelId
+                   FROM \`order\` o WHERE o.code = ? LIMIT 1`,
                 [code],
             );
             if (!rows?.length) return null;
@@ -128,6 +143,7 @@ export class TrackingEmailSender implements EmailSender {
             return {
                 orderId: Number(r.id),
                 customerId: r.customerId != null ? Number(r.customerId) : null,
+                channelId: r.channelId != null ? Number(r.channelId) : null,
             };
         } catch (e: any) {
             Logger.warn(`orderId lookup failed for code=${code}: ${e?.message}`, loggerCtx);
@@ -146,7 +162,7 @@ export class TrackingEmailSender implements EmailSender {
         if (!clean || !clean.includes('@')) return null;
         try {
             const rows: any[] = await adapterFor(this.connection.rawConnection).query(
-                'SELECT id FROM customer WHERE LOWER(emailAddress) = LOWER(?) AND deletedAt IS NULL LIMIT 1',
+                'SELECT id FROM customer WHERE LOWER(`emailAddress`) = LOWER(?) AND `deletedAt` IS NULL LIMIT 1',
                 [clean],
             );
             return rows?.length ? Number(rows[0].id) : null;
@@ -174,15 +190,20 @@ export class TrackingEmailSender implements EmailSender {
     private wrapHtml(html: string, eventId: number): string {
         const base = trackingBaseUrl();
         const ownPrefixes = ownTrackingPrefixes();
+        // Signed when a secret exists, so nobody can enumerate ids to forge opens/clicks.
+        const secret = getOptions().signingSecret;
+        const token = secret ? signValue(String(eventId), secret) : String(eventId);
         const rewritten = html.replace(/<a\b([^>]*?)\bhref\s*=\s*(["'])(.*?)\2/gi, (m, attrs, q, url) => {
             const trimmed = String(url).trim();
             if (!trimmed) return m;
             if (/^(mailto:|tel:|#)/i.test(trimmed)) return m;
             if (ownPrefixes.some(p => trimmed.startsWith(p))) return m;
             if (/unsubscribe/i.test(trimmed) || /\bopt[-_]?out\b/i.test(trimmed)) return m;
-            return `<a${attrs}href=${q}${base}/email-track/click/${eventId}?u=${encodeURIComponent(trimmed)}${q}`;
+            // Templates emit `&amp;` inside href: decode before encoding or the target's query string breaks.
+            const target = trimmed.replace(/&amp;/g, '&').replace(/&#0*38;/g, '&').replace(/&#x0*26;/gi, '&');
+            return `<a${attrs}href=${q}${base}/email-track/click/${token}?u=${encodeURIComponent(target)}${q}`;
         });
-        const pixel = `<img src="${base}/email-track/open/${eventId}.gif" width="1" height="1" alt="" border="0" style="display:none;border:0;max-height:1px;max-width:1px;outline:none;overflow:hidden;visibility:hidden">`;
+        const pixel = `<img src="${base}/email-track/open/${token}.gif" width="1" height="1" alt="" border="0" style="border:0;width:1px;height:1px;opacity:0;overflow:hidden">`;
         if (/<\/body>/i.test(rewritten)) return rewritten.replace(/<\/body>/i, `${pixel}</body>`);
         return rewritten + pixel;
     }

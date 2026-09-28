@@ -38,7 +38,6 @@ export const emailTrackingAdminApiSchema = gql`
         firstOpenedAt: DateTime
         lastOpenedAt: DateTime
         firstClickedAt: DateTime
-        lastClickedAt: DateTime
     }
 
     type HuloEmailLogList {
@@ -134,20 +133,22 @@ export class EmailTrackingAdminResolver {
         const skip = Math.max(Number(o.skip) || 0, 0);
         const where: string[] = [];
         const params: any[] = [];
-        if (f.customerId) { where.push('customerId = ?'); params.push(Number(f.customerId)); }
-        if (f.orderId)    { where.push('orderId = ?'); params.push(Number(f.orderId)); }
-        if (f.orderCode)  { where.push('orderCode = ?'); params.push(String(f.orderCode)); }
-        if (f.status)     { where.push('status = ?'); params.push(String(f.status)); }
-        if (f.type)       { where.push('type = ?'); params.push(String(f.type)); }
-        if (f.recipient)  { where.push('recipient LIKE ?'); params.push(`%${String(f.recipient)}%`); }
-        if (f.from)       { where.push('createdAt >= ?'); params.push(new Date(f.from)); }
-        if (f.to)         { where.push('createdAt <= ?'); params.push(new Date(f.to)); }
+        const int = (v: any) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
+        if (f.customerId && int(f.customerId)) { where.push('\`customerId\` = ?'); params.push(int(f.customerId)); }
+        if (f.orderId && int(f.orderId))       { where.push('\`orderId\` = ?'); params.push(int(f.orderId)); }
+        if (f.orderCode)  { where.push('\`orderCode\` = ?'); params.push(String(f.orderCode).slice(0, 64)); }
+        if (f.status)     { where.push('status = ?'); params.push(String(f.status).slice(0, 32)); }
+        if (f.type)       { where.push('type = ?'); params.push(String(f.type).slice(0, 64)); }
+        if (f.recipient)  { where.push('recipient LIKE ?'); params.push(`%${String(f.recipient).slice(0, 190).replace(/[\\%_]/g, m => '\\' + m)}%`); }
+        if (f.from && !Number.isNaN(new Date(f.from).getTime())) { where.push('\`createdAt\` >= ?'); params.push(new Date(f.from)); }
+        if (f.to && !Number.isNaN(new Date(f.to).getTime()))     { where.push('\`createdAt\` <= ?'); params.push(new Date(f.to)); }
+        if (ctx.channelId && ctx.channel?.code !== '__default_channel__' && String(ctx.channelId) !== '1') { where.push('\`channelId\` = ?'); params.push(Number(ctx.channelId)); }
         const w = where.length ? ` WHERE ${where.join(' AND ')}` : '';
 
         const items = await adapterFor(this.connection.rawConnection).query(
-            `SELECT id, createdAt, type, recipient, subject, status, openCount, clickCount,
-                    customerId, orderId, orderCode, invoiceId, smtpMessageId, errorMessage,
-                    firstOpenedAt, lastOpenedAt, firstClickedAt, lastClickedAt
+            `SELECT id, \`createdAt\`, type, recipient, subject, status, \`openCount\`, \`clickCount\`,
+                    \`customerId\`, \`orderId\`, \`orderCode\`, \`invoiceId\`, \`smtpMessageId\`, \`errorMessage\`,
+                    \`firstOpenedAt\`, \`lastOpenedAt\`, \`firstClickedAt\`
              FROM email_log${w} ORDER BY id DESC LIMIT ? OFFSET ?`,
             [...params, take, skip],
         );
@@ -174,16 +175,16 @@ export class EmailTrackingAdminResolver {
         const days = Math.min(Math.max(Number(daysInput) || 30, 1), 365);
         const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT type,
-                    COUNT(*)                                   AS sent,
-                    SUM(openCount > 0)                         AS opened,
-                    SUM(clickCount > 0)                        AS clicked,
-                    SUM(status='bounced' OR status='complained') AS bounced,
-                    SUM(status='failed')                       AS failed,
-                    SUM(status='suppressed')                   AS suppressed,
-                    SUM(openCount)                             AS totalOpens,
-                    SUM(clickCount)                            AS totalClicks
+                    COUNT(*)                                                                AS sent,
+                    SUM(CASE WHEN \`openCount\` > 0 THEN 1 ELSE 0 END)                       AS opened,
+                    SUM(CASE WHEN \`clickCount\` > 0 THEN 1 ELSE 0 END)                      AS clicked,
+                    SUM(CASE WHEN status='bounced' OR status='complained' THEN 1 ELSE 0 END) AS bounced,
+                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)                        AS failed,
+                    SUM(CASE WHEN status='suppressed' THEN 1 ELSE 0 END)                    AS suppressed,
+                    SUM(\`openCount\`)                                                       AS totalOpens,
+                    SUM(\`clickCount\`)                                                      AS totalClicks
              FROM email_log
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)
              GROUP BY type
              ORDER BY sent DESC`,
             [days],

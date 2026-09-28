@@ -33,6 +33,13 @@ export interface EmailTrackingPluginOptions {
      * Requests without a valid `X-Signature` header are rejected 401.
      */
     bounceWebhookSecret?: string;
+    /** Accept bounce webhooks without a secret (legacy; anyone who knows a
+     *  Message-ID could then suppress that customer). Default false. */
+    allowUnauthenticatedBounceWebhook?: boolean;
+    /** Proxy headers that may override `req.ip` for the visitor address.
+     *  Only list what your edge sets and strips from clients, e.g.
+     *  `['cf-connecting-ip']` behind Cloudflare. Default: none (`req.ip`). */
+    trustedIpHeaders?: Array<'cf-connecting-ip' | 'true-client-ip' | 'x-real-ip' | 'x-forwarded-for'>;
 
     /**
      * Domain allowlist for the click redirector. When non-empty, click
@@ -72,11 +79,14 @@ export interface EmailTrackingPluginOptions {
     retention?: RetentionOptions;
 }
 
-const DEFAULTS: Required<Omit<EmailTrackingPluginOptions, 'licenceKey' | 'trackedHosts' | 'signingSecret' | 'bounceWebhookSecret' | 'clickRedirectAllowedDomains' | 'retention'>> = {
+const DEFAULTS: Required<Omit<EmailTrackingPluginOptions, 'licenceKey' | 'trackedHosts' | 'signingSecret' | 'bounceWebhookSecret' | 'clickRedirectAllowedDomains'>> = {
     publicBaseUrl: 'http://localhost:3000',
     rateLimit: { capacity: 60, windowMs: 60_000 },
     ipSalt: 'hulo-email-tracking-default-salt',
     hashIpsInHistory: true,
+    retention: { days: 365 },
+    allowUnauthenticatedBounceWebhook: false,
+    trustedIpHeaders: [],
 };
 
 let cachedOptions: EmailTrackingPluginOptions = { ...DEFAULTS };
@@ -104,8 +114,9 @@ let evalClient: EvaluationClient | null = null;
 export function startEvaluation(packageName: string, packageVersion: string): void {
     if (!evalClient) {
         evalClient = new EvaluationClient({ packageName, packageVersion });
-        evalClient.start();
     }
+    // After a deactivation the existing (stopped) client must run again.
+    evalClient.start();
 }
 
 export function stopEvaluation(): void {

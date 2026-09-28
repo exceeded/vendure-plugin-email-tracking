@@ -57,6 +57,13 @@ Then add the UI extensions to your `compileUiExtensions` config:
 EmailTrackingPlugin.uiExtensions
 ```
 
+
+> **Since 0.14.2:** the bounce webhook needs `bounceWebhookSecret` (or
+> `allowUnauthenticatedBounceWebhook: true` on a private network); rows are
+> pruned after 365 days by default (`retention`); the visitor IP is `req.ip`
+> unless you list proxy headers in `trustedIpHeaders`; unsigned click links
+> only redirect to your own hosts — set `signingSecret` for full tracking.
+
 ## Feature tour
 
 ### Universal capture

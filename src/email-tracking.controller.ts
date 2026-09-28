@@ -17,6 +17,16 @@ import { getOptions, getLicenceStatus, hasPremiumAccess, getEvalState, getEvalIn
 
 const loggerCtx = 'EmailTrackingController';
 
+/** Hosts a legacy (unsigned) click token may redirect to: the shop itself plus any tracked hosts. */
+function ownHosts(): string[] {
+    const opts = getOptions();
+    const out = new Set<string>();
+    try { out.add(new URL(opts.publicBaseUrl || '').hostname.toLowerCase()); } catch { /* unset */ }
+    for (const h of opts.trackedHosts || []) { const v = String(h).toLowerCase().replace(/^https?:\/\//, '').split('/')[0]; if (v) out.add(v); }
+    for (const h of opts.clickRedirectAllowedDomains || []) { const v = String(h).toLowerCase().replace(/^\*\./, ''); if (v) out.add(v); }
+    return [...out].filter(Boolean);
+}
+
 /** Process-wide rate limiter shared across all open / click / bounce
  *  requests. Sized to comfortably handle a normal store's traffic while
  *  blocking floods. Configurable via plugin options. */
@@ -38,14 +48,33 @@ const ONE_PX_GIF = Buffer.from(
 import { getRealIp } from './proxy-headers';
 
 const PLUGIN_ID_FOR_STORE = 'vendure-plugin-email-tracking';
-function realIp(req: Request): string | null { return getRealIp(req); }
+function realIp(req: Request): string | null { return getRealIp(req, getOptions().trustedIpHeaders || []); }
 
-function requireAdmin(ctx: RequestContext, res: Response, write = false): boolean {
+/** Bounded integer from a query/body value; null when it is not one. */
+function intParam(v: unknown, min: number, max: number): number | null {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+function dateParam(v: unknown): Date | null {
+    if (!v) return null;
+    const d = new Date(String(v));
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+/** The channel an admin read is scoped to: null for the default channel (sees everything). */
+function scopedChannel(ctx: RequestContext): number | null {
+    if (!ctx?.channelId) return null;
+    if (ctx.channel?.code === '__default_channel__' || String(ctx.channelId) === '1') return null;
+    return Number(ctx.channelId);
+}
+
+function requireAdmin(ctx: RequestContext, res: Response, write: boolean | 'ops' = false): boolean {
     if (!ctx?.activeUserId) {
         res.status(401).json({ error: 'Authentication required' });
         return false;
     }
-    const needed = write ? [Permission.UpdateCustomer] : [Permission.ReadCustomer];
+    // 'ops': self-update and licence changes affect the whole install.
+    const needed = write === 'ops' ? [Permission.SuperAdmin] : write ? [Permission.UpdateCustomer] : [Permission.ReadCustomer];
     if (!ctx.userHasPermissions(needed)) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return false;
@@ -94,7 +123,7 @@ export class EmailTrackingController {
      *  package name is hard-coded; HULO_SELF_UPDATE=off disables. */
     @Post('update/run')
     async updateRun(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (!requireAdmin(ctx, res, true)) return;
+        if (!requireAdmin(ctx, res, 'ops')) return;
         const updater = EmailTrackingPlugin.getUpdateChecker();
         const target = String(body?.version || updater?.getStatus()?.latest || '').trim();
         if (!target) return res.status(400).json({ ok: false, message: 'No target version known yet — the registry check runs daily; try again shortly.' });
@@ -106,7 +135,7 @@ export class EmailTrackingController {
      *  boot-time checks, applied immediately and persisted. */
     @Post('licence/activate')
     async licenceActivate(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (!requireAdmin(ctx, res, true)) return;
+        if (!requireAdmin(ctx, res, 'ops')) return;
         const key = String(body?.key || '').trim();
         if (!key) return res.status(400).json({ licensed: false, message: 'Paste your licence key first.' });
         const status = EmailTrackingPlugin.activateRuntimeLicence(key);
@@ -119,7 +148,7 @@ export class EmailTrackingController {
     /** Remove an admin-activated key (env-configured keys unaffected). */
     @Post('licence/deactivate')
     async licenceDeactivate(@Ctx() ctx: RequestContext, @Res() res: Response) {
-        if (!requireAdmin(ctx, res, true)) return;
+        if (!requireAdmin(ctx, res, 'ops')) return;
         await this.licenceStore.clear(PLUGIN_ID_FOR_STORE);
         EmailTrackingPlugin.deactivateRuntimeLicence();
         return res.json({ licensed: false });
@@ -131,7 +160,7 @@ export class EmailTrackingController {
      *  round-trip, no .env edit, no restart. */
     @Post('licence/purchase-link')
     async licencePurchaseLink(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (!requireAdmin(ctx, res, true)) return;
+        if (!requireAdmin(ctx, res, 'ops')) return;
         const plan = (['monthly', 'annual', 'lifetime'].includes(String(body?.plan)) ? String(body.plan) : 'annual') as 'monthly' | 'annual' | 'lifetime';
         try {
             const r = await this.purchaseClaimClient().createPurchaseLink(plan, String(body?.email || '').trim() || undefined);
@@ -158,7 +187,7 @@ export class EmailTrackingController {
      *  the buy-from-admin claim or by the stored licence key itself. */
     @Post('licence/portal-link')
     async licencePortalLink(@Ctx() ctx: RequestContext, @Res() res: Response) {
-        if (!requireAdmin(ctx, res, true)) return;
+        if (!requireAdmin(ctx, res, 'ops')) return;
         let storedKey: string | null = null;
         try { storedKey = await this.licenceStore.load(PLUGIN_ID_FOR_STORE); } catch { storedKey = null; }
         const url = await this.purchaseClaimClient().billingPortalUrl(storedKey);
@@ -236,7 +265,9 @@ export class EmailTrackingController {
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
-        applySecurityHeaders(res);
+        // Not applySecurityHeaders(): its CORP `same-origin` makes mail clients drop a cross-origin image.
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Referrer-Policy', 'no-referrer');
         return res.end(ONE_PX_GIF);
     }
 
@@ -264,8 +295,24 @@ export class EmailTrackingController {
             applySecurityHeaders(res);
             return res.status(400).send('Invalid redirect target');
         }
-
         const id = this.resolveSignedId(token);
+        // Never redirect for a token we cannot tie to an email we sent: with a
+        // signing secret that closes the open redirector completely. Legacy
+        // unsigned ids (emails sent before a secret existed) may only redirect
+        // to the shop's own hosts.
+        if (id === null) {
+            applySecurityHeaders(res);
+            return res.status(404).send('Unknown link');
+        }
+        if (!opts.signingSecret || !/\./.test(token)) {
+            const own = ownHosts();
+            let host = '';
+            try { host = new URL(url).hostname.toLowerCase(); } catch { /* rejected above */ }
+            if (own.length && !own.some(h => host === h || host.endsWith(`.${h}`))) {
+                applySecurityHeaders(res);
+                return res.status(400).send('Invalid redirect target');
+            }
+        }
         if (id !== null && hasPremiumAccess()) {
             // Click tracking is paid. Unlicensed mode still redirects
             // (we don't break the customer's email) but doesn't log.
@@ -288,14 +335,16 @@ export class EmailTrackingController {
     private resolveSignedId(raw: string): number | null {
         if (!raw) return null;
         const secret = getOptions().signingSecret;
-        if (secret) {
+        if (secret && raw.includes('.')) {
             const value = verifySignedValue(raw, secret);
-            if (!value) return null;
+            if (!value || !/^\d{1,12}$/.test(value)) return null;
             const id = parseInt(value, 10);
-            return isFinite(id) && id > 0 ? id : null;
+            return id > 0 ? id : null;
         }
+        // Bare id: only the exact decimal form ("12abc" and 64-hex link tokens are not ids).
+        if (!/^\d{1,12}$/.test(raw)) return null;
         const id = parseInt(raw, 10);
-        return isFinite(id) && id > 0 ? id : null;
+        return id > 0 ? id : null;
     }
 
     /**
@@ -322,6 +371,15 @@ export class EmailTrackingController {
         // production).
         const opts = getOptions();
         const secret = opts.bounceWebhookSecret || opts.signingSecret;
+        if (!secret && !opts.allowUnauthenticatedBounceWebhook) {
+            // Anyone who knows a Message-ID could otherwise mark mail bounced and suppress the customer.
+            return res.status(503).json({ error: 'bounce webhook disabled: set bounceWebhookSecret (or allowUnauthenticatedBounceWebhook: true on a private network)' });
+        }
+        const bounceIp = realIp(req);
+        if (bounceIp && !getLimiter().allow(`bounce|${bounceIp}`)) {
+            res.setHeader('Retry-After', '60');
+            return res.status(429).json({ error: 'Too many requests' });
+        }
         if (secret) {
             const sig = (req.headers['x-signature'] as string)
                 || (req.headers['x-hub-signature-256'] as string)
@@ -340,13 +398,16 @@ export class EmailTrackingController {
             }
         }
 
-        const messageId = String(body?.messageId || '').trim();
+        const messageId = String(body?.messageId || '').trim().replace(/^<|>$/g, '');
         if (!messageId || messageId.length > 500) {
             return res.status(400).json({ error: 'messageId required' });
         }
         const status = body?.status === 'complained' ? 'complained' : 'bounced';
+        // A soft/transient bounce (mailbox full, greylisting) is recorded but never suppresses the address.
+        const bounceType = String(body?.bounceType || 'hard').toLowerCase();
+        const soft = status === 'bounced' && (bounceType === 'soft' || bounceType === 'transient');
         const reason = body?.reason ? String(body.reason).slice(0, 2000) : undefined;
-        const ok = await this.tracking.recordBounce(messageId, status, reason);
+        const ok = await this.tracking.recordBounce(messageId, status, reason, { soft });
         return res.json({ ok, matched: ok });
     }
 
@@ -357,33 +418,48 @@ export class EmailTrackingController {
      *
      * GET /email-track/log?customerId=&orderId=&status=&take=
      */
+    /** Validated WHERE for the log list and export (400 on a bad value); non-default channels only see their own rows. */
+    private buildLogFilter(ctx: RequestContext, q: any): { where: string[]; params: any[] } | { error: string } {
+        const where: string[] = [];
+        const params: any[] = [];
+        const int = (name: string, col: string) => {
+            if (q[name] === undefined || q[name] === '') return true;
+            const n = intParam(q[name], 1, 2147483647);
+            if (n === null) return false;
+            where.push(`\`${col}\` = ?`); params.push(n); return true;
+        };
+        if (!int('customerId', 'customerId') || !int('orderId', 'orderId') || !int('invoiceId', 'invoiceId')) return { error: 'ids must be positive integers' };
+        if (q.orderCode) { where.push('\`orderCode\` = ?'); params.push(String(q.orderCode).slice(0, 64)); }
+        if (q.status) { where.push('status = ?'); params.push(String(q.status).slice(0, 32)); }
+        if (q.type) { where.push('type = ?'); params.push(String(q.type).slice(0, 64)); }
+        if (q.recipient) { where.push('recipient LIKE ?'); params.push(`%${String(q.recipient).slice(0, 190).replace(/[\\%_]/g, m => '\\' + m)}%`); }
+        if (q.from) { const d = dateParam(q.from); if (!d) return { error: 'from is not a date' }; where.push('\`createdAt\` >= ?'); params.push(d); }
+        if (q.to) { const d = dateParam(q.to); if (!d) return { error: 'to is not a date' }; where.push('\`createdAt\` <= ?'); params.push(d); }
+        const scope = scopedChannel(ctx);
+        if (scope) { where.push('\`channelId\` = ?'); params.push(scope); }
+        return { where, params };
+    }
+
     @Get('log')
     async listLog(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res, false)) return;
         const q = req.query as any;
-        const take = Math.min(parseInt(q.take, 10) || 100, 500);
-        const skip = parseInt(q.skip, 10) || 0;
-        const where: string[] = [];
-        const params: any[] = [];
-        if (q.customerId) { where.push('customerId = ?'); params.push(parseInt(q.customerId, 10)); }
-        if (q.orderId) { where.push('orderId = ?'); params.push(parseInt(q.orderId, 10)); }
-        if (q.orderCode) { where.push('orderCode = ?'); params.push(String(q.orderCode)); }
-        if (q.invoiceId) { where.push('invoiceId = ?'); params.push(parseInt(q.invoiceId, 10)); }
-        if (q.status) { where.push('status = ?'); params.push(String(q.status)); }
-        if (q.type) { where.push('type = ?'); params.push(String(q.type)); }
-        if (q.recipient) { where.push('recipient LIKE ?'); params.push(`%${String(q.recipient)}%`); }
-        if (q.from) { where.push('createdAt >= ?'); params.push(new Date(String(q.from))); }
-        if (q.to) { where.push('createdAt <= ?'); params.push(new Date(String(q.to))); }
+        const take = intParam(q.take, 1, 500) ?? 100;
+        const skip = intParam(q.skip, 0, 10_000_000) ?? 0;
+        const built = this.buildLogFilter(ctx, q);
+        if ('error' in built) return res.status(400).json({ error: built.error });
+        const { where, params } = built;
 
         const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+        // Backticks: email_log is a TypeORM entity table, so its camelCase columns are quoted on Postgres.
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT id, createdAt, type, recipient, subject, status,
-                    customerId, orderId, orderCode, invoiceId, applicationId,
-                    channelId, openCount, firstOpenedAt, lastOpenedAt,
-                    clickCount, firstClickedAt, smtpResponse, errorMessage
+            `SELECT id, \`createdAt\`, type, recipient, subject, status,
+                    \`customerId\`, \`orderId\`, \`orderCode\`, \`invoiceId\`, \`applicationId\`,
+                    \`channelId\`, \`openCount\`, \`firstOpenedAt\`, \`lastOpenedAt\`,
+                    \`clickCount\`, \`firstClickedAt\`, \`smtpResponse\`, \`errorMessage\`
              FROM email_log
              ${whereClause}
-             ORDER BY createdAt DESC
+             ORDER BY id DESC
              LIMIT ? OFFSET ?`,
             [...params, take, skip],
         );
@@ -397,13 +473,14 @@ export class EmailTrackingController {
     @Get('log/summary')
     async logSummary(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res, false)) return;
-        const fromDays = parseInt((req.query as any).fromDays, 10) || 30;
+        const fromDays = intParam((req.query as any).fromDays, 1, 365) ?? 30;
+        const scope = scopedChannel(ctx);
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT status, COUNT(*) AS n, SUM(openCount) AS opens, SUM(clickCount) AS clicks
+            `SELECT status, COUNT(*) AS n, SUM(\`openCount\`) AS opens, SUM(\`clickCount\`) AS clicks
              FROM email_log
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)${scope ? ' AND \`channelId\` = ?' : ''}
              GROUP BY status`,
-            [fromDays],
+            scope ? [fromDays, scope] : [fromDays],
         );
         const summary: any = { sent: 0, failed: 0, deferred: 0, bounced: 0, complained: 0, opens: 0, clicks: 0, fromDays };
         for (const r of rows) {
@@ -437,22 +514,23 @@ export class EmailTrackingController {
         if (!hasPremiumAccess()) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-email-tracking'));
         }
-        const days = Math.min(Math.max(parseInt((req.query as any).fromDays, 10) || 30, 1), 365);
+        const days = intParam((req.query as any).fromDays, 1, 365) ?? 30;
+        const scope = scopedChannel(ctx);
         const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT type,
-                    COUNT(*)                                   AS sent,
-                    SUM(openCount > 0)                         AS opened,
-                    SUM(clickCount > 0)                        AS clicked,
-                    SUM(status='bounced' OR status='complained') AS bounced,
-                    SUM(status='failed')                       AS failed,
-                    SUM(status='suppressed')                   AS suppressed,
-                    SUM(openCount)                             AS totalOpens,
-                    SUM(clickCount)                            AS totalClicks
+                    COUNT(*)                                                                AS sent,
+                    SUM(CASE WHEN \`openCount\` > 0 THEN 1 ELSE 0 END)                       AS opened,
+                    SUM(CASE WHEN \`clickCount\` > 0 THEN 1 ELSE 0 END)                      AS clicked,
+                    SUM(CASE WHEN status='bounced' OR status='complained' THEN 1 ELSE 0 END) AS bounced,
+                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)                        AS failed,
+                    SUM(CASE WHEN status='suppressed' THEN 1 ELSE 0 END)                    AS suppressed,
+                    SUM(\`openCount\`)                                                       AS totalOpens,
+                    SUM(\`clickCount\`)                                                      AS totalClicks
              FROM email_log
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)${scope ? ' AND \`channelId\` = ?' : ''}
              GROUP BY type
              ORDER BY sent DESC`,
-            [days],
+            scope ? [days, scope] : [days],
         );
         return res.json({ days, types: rows.map((r: any) => ({
             ...r,
@@ -470,30 +548,26 @@ export class EmailTrackingController {
             return res.status(402).json(premiumFeatureError('vendure-plugin-email-tracking'));
         }
         const q = req.query as any;
-        const where: string[] = [];
-        const params: any[] = [];
-        if (q.customerId) { where.push('customerId = ?'); params.push(parseInt(q.customerId, 10)); }
-        if (q.orderId) { where.push('orderId = ?'); params.push(parseInt(q.orderId, 10)); }
-        if (q.orderCode) { where.push('orderCode = ?'); params.push(String(q.orderCode)); }
-        if (q.status) { where.push('status = ?'); params.push(String(q.status)); }
-        if (q.type) { where.push('type = ?'); params.push(String(q.type)); }
-        if (q.recipient) { where.push('recipient LIKE ?'); params.push(`%${String(q.recipient)}%`); }
-        if (q.from) { where.push('createdAt >= ?'); params.push(new Date(String(q.from))); }
-        if (q.to) { where.push('createdAt <= ?'); params.push(new Date(String(q.to))); }
+        const built = this.buildLogFilter(ctx, q);
+        if ('error' in built) return res.status(400).json({ error: built.error });
+        const { where, params } = built;
         const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT createdAt, type, recipient, subject, status,
-                    openCount, clickCount, customerId, orderCode, invoiceId,
-                    smtpMessageId, errorMessage
+            `SELECT \`createdAt\`, type, recipient, subject, status,
+                    \`openCount\`, \`clickCount\`, \`customerId\`, \`orderCode\`, \`invoiceId\`,
+                    \`smtpMessageId\`, \`errorMessage\`
              FROM email_log ${whereClause}
-             ORDER BY createdAt DESC LIMIT 50000`,
+             ORDER BY id DESC LIMIT 50000`,
             params,
         );
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="email-log-${new Date().toISOString().slice(0, 10)}.csv"`);
         const esc = (v: any): string => {
             if (v === null || v === undefined) return '';
-            const s = String(v).replace(/"/g, '""');
+            let s = String(v);
+            // A cell starting with = + - @ (or a tab/CR) would run as a formula in Excel/Sheets.
+            if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+            s = s.replace(/"/g, '""');
             return /[",\n]/.test(s) ? `"${s}"` : s;
         };
         const header = 'createdAt,type,recipient,subject,status,openCount,clickCount,customerId,orderCode,invoiceId,smtpMessageId,errorMessage\n';
@@ -531,13 +605,17 @@ export class EmailTrackingController {
     @Post('suppression')
     async addSuppression(@Ctx() ctx: RequestContext, @Body() body: any, @Res() res: Response) {
         if (!requireAdmin(ctx, res, true)) return;
-        const recipient = String(body?.recipient || '').trim();
-        if (!recipient.includes('@')) return res.status(400).json({ error: 'Valid recipient required' });
+        const recipient = String(body?.recipient || '').trim().slice(0, 320);
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) return res.status(400).json({ error: 'Valid recipient required' });
+        const reason = String(body?.reason || 'manual');
+        if (!['hard-bounce', 'complaint', 'manual', 'unsubscribe'].includes(reason)) return res.status(400).json({ error: 'reason must be hard-bounce, complaint, manual or unsubscribe' });
+        const channelId = body?.channelId === undefined || body?.channelId === null || body?.channelId === '' ? undefined : intParam(body.channelId, 1, 2147483647);
+        if (body?.channelId && channelId === null) return res.status(400).json({ error: 'channelId must be a positive integer' });
         const row = await this.tracking.addSuppression(
             recipient,
-            String(body?.reason || 'manual'),
-            body?.note ? String(body.note) : undefined,
-            body?.channelId ? Number(body.channelId) : undefined,
+            reason,
+            body?.note ? String(body.note).slice(0, 2000) : undefined,
+            channelId ?? undefined,
         );
         return res.json({ ok: true, row });
     }

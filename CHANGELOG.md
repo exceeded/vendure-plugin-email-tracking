@@ -5,6 +5,58 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] — 2026-09-28
+
+Reliability and security pass — no new features. Three indexes on
+`email_log` and one on `smtpMessageId` are declared (run your migrations).
+
+### Fixed
+- **Postgres boot.** Date columns were declared as `datetime`, which
+  TypeORM rejects on Postgres at start-up; they are now portable `Date`
+  columns. Raw SQL quotes every camelCase column and uses `SUM(CASE …)`
+  instead of `SUM(boolean)`, so the log, summaries, exports and the
+  GraphQL list work on Postgres.
+- **GraphQL `huloEmailLogs`** selected a `lastClickedAt` column that does
+  not exist and failed on every database.
+- **Open redirect.** The click redirector no longer redirects for a token
+  it cannot tie to an email; unsigned legacy ids may only redirect to the
+  shop's own hosts (`publicBaseUrl`, `trackedHosts`,
+  `clickRedirectAllowedDomains`); signed links are unchanged. Bare ids
+  must be plain decimals (a 64-hex link token no longer resolves to row 7).
+- **A database hiccup no longer blocks the email.** The tracking sender
+  now sends untracked when the log row cannot be written, and column caps
+  match the schema (a long subject used to make MariaDB refuse the row and
+  the OTP/password-reset email was never sent).
+- **Permissions.** Self-update, licence activate/deactivate, purchase and
+  portal links need SuperAdmin (they were reachable with UpdateCustomer).
+  Admins in a non-default channel only see their channel's rows; the
+  sender records the order's channel instead of always channel 1.
+- **Bounce webhook** is refused without a secret unless
+  `allowUnauthenticatedBounceWebhook: true`; it is rate limited;
+  Message-IDs match with or without angle brackets; soft/transient
+  bounces (`bounceType: 'soft'`) are recorded as deferred and never
+  suppress the address; suppression inserts are race-safe.
+- Opens and clicks are counted with atomic `UPDATE … + 1` statements
+  (concurrent pixel fetches from Gmail's proxy and Apple MPP used to lose
+  increments); the pixel is no longer `display:none` (Outlook skips hidden
+  images) and no longer carries a same-origin resource policy.
+- Links whose `href` contains `&amp;` are decoded before being wrapped,
+  so click-through query strings survive.
+- Admin list/export/summary inputs are validated (400 instead of 500 on
+  bad ids or dates); CSV cells starting with `=`, `+`, `-`, `@` are quoted
+  so they cannot run as spreadsheet formulas; suppression reasons are
+  checked against the known set.
+- Deactivating a runtime licence restarts the evaluation client instead
+  of leaving it stopped.
+- Admin UI: the update banner is no longer shown twice, the copy button
+  copies a real `@`, the restart poll is cancelled on destroy.
+
+### Changed
+- `retention` defaults to `{ days: 365 }` (was: keep everything).
+- New options `trustedIpHeaders` (proxy headers that may override
+  `req.ip`; default none) and `allowUnauthenticatedBounceWebhook`.
+- The list orders by `id DESC` (same order, uses the primary key).
+
 ## [0.14.1] — 2026-09-02
 
 ### Changed

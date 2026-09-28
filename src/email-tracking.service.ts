@@ -107,7 +107,9 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
 
         // Wrap the HTML — clicks first (so the pixel itself isn't rewritten),
         // then the pixel append. Plain-text-only emails are unaffected.
-        const html = mail.html ? String(mail.html) : '';
+        // nodemailer also accepts Buffer/stream/{path} bodies: only wrap a string.
+        const html = typeof mail.html === 'string' ? mail.html : '';
+        if (mail.html && !html) Logger.warn('tracked send: non-string html body left untouched (no tracking)', loggerCtx);
         if (html) {
             const wrapped = this.wrapHtml(html, Number(saved.id));
             mail = { ...mail, html: wrapped };
@@ -141,7 +143,7 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
         const base = trackingBaseUrl();
         const token = this.tokenForId(eventId);
         const trackedHtml = this.rewriteLinks(html, token, base);
-        const pixel = `<img src="${base}/email-track/open/${token}.gif" width="1" height="1" alt="" border="0" style="display:none;border:0;max-height:1px;max-width:1px;outline:none;overflow:hidden;visibility:hidden">`;
+        const pixel = `<img src="${base}/email-track/open/${token}.gif" width="1" height="1" alt="" border="0" style="border:0;width:1px;height:1px;opacity:0;overflow:hidden">`;
         if (/<\/body>/i.test(trackedHtml)) {
             return trackedHtml.replace(/<\/body>/i, `${pixel}</body>`);
         }
@@ -166,7 +168,9 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
             if (/^(mailto:|tel:|#)/i.test(trimmed)) return match;
             if (ownPrefixes.some(p => trimmed.startsWith(p))) return match;
             if (/unsubscribe/i.test(trimmed) || /\bopt[-_]?out\b/i.test(trimmed)) return match;
-            const encoded = encodeURIComponent(trimmed);
+            // Templates emit `&amp;` inside href: decode before encoding or the target's query string breaks.
+            const target = trimmed.replace(/&amp;/g, '&').replace(/&#0*38;/g, '&').replace(/&#x0*26;/gi, '&');
+            const encoded = encodeURIComponent(target);
             return `<a${attrs}href=${quote}${base}/email-track/click/${token}?u=${encoded}${quote}`;
         });
     }
@@ -184,23 +188,23 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
      */
     async recordOpen(id: number, ip: string | null, ua: string | null) {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
-        const row = await repo.findOne({ where: { id } });
-        if (!row) return;
         const opts = getOptions();
         const now = new Date();
-        row.lastOpenedAt = now;
-        row.openCount = (row.openCount || 0) + 1;
-
         // Geo lookup uses the raw IP — done before hashing so we can
         // resolve country/city even when the stored IP is anonymised.
         const geo = await lookupGeo(ip);
         const ipForRow = opts.hashIpsInHistory ? hashIp(ip, opts.ipSalt || '') : ip;
-
-        if (!row.firstOpenedAt) {
-            row.firstOpenedAt = now;
-            row.firstOpenIp = ipForRow || undefined as any;
-            row.firstOpenUserAgent = ua ? ua.slice(0, 1000) : undefined as any;
-        }
+        // Atomic counter: Gmail's proxy, Apple MPP and the real open arrive together.
+        const r = await adapterFor(this.connection.rawConnection).query(
+            `UPDATE email_log SET \`openCount\` = \`openCount\` + 1, \`lastOpenedAt\` = ?,
+                    \`firstOpenedAt\` = COALESCE(\`firstOpenedAt\`, ?), \`firstOpenIp\` = COALESCE(\`firstOpenIp\`, ?), \`firstOpenUserAgent\` = COALESCE(\`firstOpenUserAgent\`, ?)
+              WHERE id = ?`,
+            [now, now, ipForRow || null, ua ? ua.slice(0, 1000) : null, id], { needAffected: true },
+        );
+        if (!Number(r?.affectedRows ?? r?.rowCount ?? 0)) return;
+        // History is best effort (last writer wins on the JSON only).
+        const row = await repo.findOne({ where: { id } });
+        if (!row) return;
         let opens: any[] = [];
         try { opens = JSON.parse(row.opensJson || '[]'); } catch {}
         const parsed = parseEmailClient(ua);
@@ -218,19 +222,21 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
             timezone: geo.timezone,
         });
         if (opens.length > 50) opens = opens.slice(-50);
-        row.opensJson = JSON.stringify(opens);
-        await repo.save(row);
+        await repo.update(id, { opensJson: JSON.stringify(opens) });
     }
 
     /** Record a click. Geo + IP hashing applied the same way as opens. */
     async recordClick(id: number, url: string, ip: string | null, ua: string | null): Promise<string | null> {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
-        const row = await repo.findOne({ where: { id } });
-        if (!row) return null;
         const opts = getOptions();
         const now = new Date();
-        if (!row.firstClickedAt) row.firstClickedAt = now;
-        row.clickCount = (row.clickCount || 0) + 1;
+        const r = await adapterFor(this.connection.rawConnection).query(
+            `UPDATE email_log SET \`clickCount\` = \`clickCount\` + 1, \`firstClickedAt\` = COALESCE(\`firstClickedAt\`, ?) WHERE id = ?`,
+            [now, id], { needAffected: true },
+        );
+        if (!Number(r?.affectedRows ?? r?.rowCount ?? 0)) return null;
+        const row = await repo.findOne({ where: { id } });
+        if (!row) return null;
 
         const geo = await lookupGeo(ip);
         const ipForRow = opts.hashIpsInHistory ? hashIp(ip, opts.ipSalt || '') : ip;
@@ -249,8 +255,7 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
             timezone: geo.timezone,
         });
         if (clicks.length > 50) clicks = clicks.slice(-50);
-        row.clicksJson = JSON.stringify(clicks);
-        await repo.save(row);
+        await repo.update(id, { clicksJson: JSON.stringify(clicks) });
         return url;
     }
 
@@ -258,13 +263,16 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
      *  Tools / a bounce-processor at /email-track/bounce. Hard bounces +
      *  complaints automatically add the recipient to the suppression list
      *  so the next send-attempt is refused. */
-    async recordBounce(messageId: string, status: 'bounced' | 'complained', reason?: string) {
+    async recordBounce(messageId: string, status: 'bounced' | 'complained', reason?: string, opts: { soft?: boolean } = {}) {
         const repo = this.connection.rawConnection.getRepository(EmailLog);
-        const row = await repo.findOne({ where: { smtpMessageId: messageId } });
+        // Providers send the Message-ID with or without angle brackets.
+        const bare = messageId.replace(/^<|>$/g, '');
+        const row = (await repo.findOne({ where: { smtpMessageId: bare } })) || (await repo.findOne({ where: { smtpMessageId: `<${bare}>` } }));
         if (!row) return false;
-        row.status = status;
+        row.status = opts.soft ? 'deferred' : status;
         if (reason) row.errorMessage = reason.slice(0, 2000);
         await repo.save(row);
+        if (opts.soft) return true; // mailbox full / greylisted: never suppress
 
         if (row.recipient) {
             const suppressionReason = status === 'complained' ? 'complaint' : 'hard-bounce';
@@ -297,13 +305,13 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
             }
             return existing;
         }
-        const row = repo.create({
-            recipient: lower,
-            reason,
-            note: note ? note.slice(0, 2000) : (null as any),
-            channelId: channelId || null as any,
-        });
-        return await repo.save(row);
+        // Two bounce webhooks for the same address can race: insert-ignore under the unique index, then read back.
+        await adapterFor(this.connection.rawConnection).query(
+            `INSERT IGNORE INTO email_suppression (\`createdAt\`, \`updatedAt\`, recipient, reason, note, \`channelId\`) VALUES (NOW(), NOW(), ?, ?, ?, ?)`,
+            [lower, reason.slice(0, 32), note ? note.slice(0, 2000) : null, channelId || null],
+        ).catch(() => undefined);
+        const row = await repo.findOne({ where: { recipient: lower } });
+        return row || (await repo.save(repo.create({ recipient: lower, reason, note: note ? note.slice(0, 2000) : (null as any), channelId: channelId || null as any })));
     }
 
     async removeSuppression(recipient: string): Promise<boolean> {

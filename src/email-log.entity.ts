@@ -22,6 +22,9 @@ export type EmailLogStatus =
  *   /email-track/open/:id.gif  and  /email-track/click/:id?u=<encoded>.
  */
 @Entity()
+@Index('IDX_email_log_created', ['createdAt'])
+@Index('IDX_email_log_status_created', ['status', 'createdAt'])
+@Index('IDX_email_log_type_created', ['type', 'createdAt'])
 export class EmailLog extends VendureEntity {
     constructor(input?: DeepPartial<EmailLog>) {
         super(input);
@@ -88,6 +91,7 @@ export class EmailLog extends VendureEntity {
     @Column({ nullable: true, length: 512 })
     smtpResponse!: string;
 
+    @Index()
     @Column({ nullable: true, length: 512 })
     smtpMessageId!: string;
 
@@ -98,10 +102,10 @@ export class EmailLog extends VendureEntity {
     @Column({ type: 'int', default: 0 })
     openCount!: number;
 
-    @Column({ type: 'datetime', nullable: true })
+    @Column({ type: Date, nullable: true })
     firstOpenedAt!: Date;
 
-    @Column({ type: 'datetime', nullable: true })
+    @Column({ type: Date, nullable: true })
     lastOpenedAt!: Date;
 
     @Column({ nullable: true })
@@ -123,7 +127,7 @@ export class EmailLog extends VendureEntity {
     @Column({ type: 'text', nullable: true })
     clicksJson!: string;
 
-    @Column({ type: 'datetime', nullable: true })
+    @Column({ type: Date, nullable: true })
     firstClickedAt!: Date;
 
     /** Whether the email was sent via our "tracked" pipeline at all.

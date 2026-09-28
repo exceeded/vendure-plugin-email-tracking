@@ -107,6 +107,6 @@ export class EmailLink extends VendureEntity {
     @Column({ type: 'boolean', default: false })
     isSensitive!: boolean;
 
-    @Column({ type: 'datetime', precision: 3, nullable: true })
+    @Column({ type: Date, precision: 3, nullable: true })
     expiresAt!: Date | null;
 }

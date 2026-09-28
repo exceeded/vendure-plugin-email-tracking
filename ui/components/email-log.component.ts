@@ -1,4 +1,4 @@
-import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
+import { Component, OnDestroy, OnInit, ChangeDetectorRef } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { NotificationService } from '@vendure/admin-ui/core';
@@ -488,7 +488,8 @@ interface EmailDetail extends EmailRow {
         }
     `],
 })
-export class EmailLogComponent implements OnInit {
+export class EmailLogComponent implements OnInit, OnDestroy {
+    private restartTimer: any = null;
     rows: EmailRow[] = [];
     total = 0;
     take = 100;
@@ -558,7 +559,7 @@ export class EmailLogComponent implements OnInit {
             this.cdr.markForCheck();
             return;
         }
-        setTimeout(() => {
+        this.restartTimer = setTimeout(() => {
             this.http.get<any>('/email-track/licence/status').subscribe({
                 next: m => {
                     const v = m?.version || m?.update?.current;
@@ -581,7 +582,7 @@ export class EmailLogComponent implements OnInit {
     cmdCopied = false;
 
     copyUpdateCmd() {
-        const cmd = `npm install &#64;huloglobal/vendure-plugin-email-tracking@${this.licMeta?.update?.latest || 'latest'}`;
+        const cmd = `npm install @huloglobal/vendure-plugin-email-tracking@${this.licMeta?.update?.latest || 'latest'}`;
         navigator.clipboard?.writeText(cmd).then(() => {
             this.cmdCopied = true;
             this.cdr.markForCheck();
@@ -635,7 +636,7 @@ export class EmailLogComponent implements OnInit {
     }
     private startClaimPoll() { this.stopClaimPoll(); this.claimTimer = setInterval(() => this.checkClaim(false), 15000); }
     private stopClaimPoll() { if (this.claimTimer) { clearInterval(this.claimTimer); this.claimTimer = null; } }
-    ngOnDestroy() { this.stopClaimPoll(); }
+    ngOnDestroy() { this.stopClaimPoll(); clearTimeout(this.restartTimer); }
 
     portalOpening = false;
     licenceLabel(): string {
@@ -689,7 +690,6 @@ export class EmailLogComponent implements OnInit {
         const oCode = this.route.snapshot.queryParamMap.get('orderCode');
         if (oCode) this.filterOrderCode = oCode;
         this.load();
-        this.loadStatus();
     }
 
     loadStatus() {
