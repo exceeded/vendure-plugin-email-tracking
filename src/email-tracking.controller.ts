@@ -11,7 +11,7 @@ import {
 import { Request, Response } from 'express';
 import { EmailLog } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
-import { EmailTrackingService } from './email-tracking.service';
+import { EmailTrackingService, PREMIUM_FEATURES, effectiveTier, recentStatLines } from './email-tracking.service';
 import { EmailLinkService } from './email-link.service';
 import { EmailTrackingPlugin } from './plugin';
 import { getOptions, getLicenceStatus, hasPremiumAccess, getEvalState, getEvalInstanceId, configuredSigningSecret } from './options';
@@ -100,23 +100,111 @@ export class EmailTrackingController {
 
     private licenceStore = new LicenceStore((sql: string, params?: any[]) => adapterFor(this.connection.rawConnection).query(sql, params));
 
-    /** Licence/evaluation state for the admin banner. */
+    /** Licence/evaluation state for the admin banner, plus the lifecycle
+     *  notice, what the free tier loses and the top 30-day figures. */
     @Get('licence/status')
     async licenceState(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (!requireAdmin(ctx, res, false)) return;
         const licence = getLicenceStatus();
         const ev = getEvalState();
         const updater = EmailTrackingPlugin.getUpdateChecker();
+        const summary = describeLicence(licence);
+        let recentStats: Array<{ label: string; value: string }> = [];
+        try { recentStats = recentStatLines(await this.tracking.evalStats()); } catch { recentStats = []; }
         return res.json({
             licensed: !!licence?.valid,
-            licence: describeLicence(licence),
+            licence: summary,
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
-            tier: licence?.valid ? 'paid' : (ev?.active ? 'trial' : 'free'),
+            tier: effectiveTier(),
             eval: ev,
             pkg: PLUGIN_ID_FOR_STORE,
             update: updater ? updater.getStatus() : null,
             selfUpdate: selfUpdateEnv(),
+            notice: this.tracking.licenceNotice(),
+            premiumFeatures: PREMIUM_FEATURES,
+            recentStats,
         });
+    }
+
+    /** Trial reminder opt-in: the admin's address goes to the licence server
+     *  (`/licence/eval/lead`) so they hear before the evaluation ends.
+     *  Explicit consent only; the address is also kept as the default
+     *  recipient of the weekly report. */
+    @Post('eval/remind-me')
+    async evalRemindMe(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, true)) return;
+        const email = String(body?.email || '').trim().slice(0, 320);
+        const instanceId = getEvalInstanceId() || evalInstanceId();
+        if (!/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(email) || !instanceId) return res.status(400).json({ error: 'bad-request', message: 'Enter a valid email address' });
+        try {
+            const base = (process.env.HULO_LICENCE_EVAL_URL || 'https://elite.charity/licence/eval/register').replace(/\/register$/, '');
+            const resp = await fetch(`${base}/lead`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ plugin: EmailTrackingPlugin.getPackageName(), instanceId, email }),
+                signal: AbortSignal.timeout(8_000),
+            });
+            if (!resp.ok) return res.status(502).json({ error: 'upstream', status: resp.status });
+            await this.tracking.prefs.set('eval.leadEmail', email.toLowerCase());
+            return res.json({ ok: true });
+        } catch {
+            return res.status(502).json({ error: 'unreachable' });
+        }
+    }
+
+    /** Set-up checklist for the first screen (real checks, read-only). */
+    @Get('setup')
+    async setup(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        return res.json(await this.tracking.setupChecklist());
+    }
+
+    /** Dashboard widget: three 7-day figures + lifecycle notice. */
+    @Get('widget')
+    async widget(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        return res.json(await this.tracking.widgetData());
+    }
+
+    // ── Weekly report ──────────────────────────────────────────────────
+
+    @Get('digest/settings')
+    async digestSettings(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        return res.json(await this.tracking.digestSettings());
+    }
+
+    @Post('digest/settings')
+    async digestUpdateSettings(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, true)) return;
+        const patch: { enabled?: boolean; recipient?: string | null } = {};
+        if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
+        if (body && 'recipient' in body) patch.recipient = body.recipient === null ? null : String(body.recipient ?? '');
+        try {
+            return res.json(await this.tracking.digest.updateSettings(patch));
+        } catch (e: any) {
+            return res.status(400).json({ error: 'bad-request', message: e?.message || 'Invalid settings' });
+        }
+    }
+
+    @Post('digest/send-test')
+    async digestSendTest(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, true)) return;
+        const to = body?.to ? String(body.to).trim().slice(0, 320) : undefined;
+        if (to && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'bad-request', message: 'Enter a valid email address' });
+        const r = await this.tracking.digest.sendNow(to);
+        return res.json({ sent: r.sent, to: r.to, reason: r.reason, subject: r.preview.subject });
+    }
+
+    /** This week's report as HTML, for the admin "Preview" button. */
+    @Get('digest/preview')
+    async digestPreview(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res, false)) return;
+        const mail = await this.tracking.digestPreview();
+        applySecurityHeaders(res);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.send(mail.html);
     }
 
     /** One-click in-app update (owner-approved feature): installs a

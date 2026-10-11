@@ -7,7 +7,7 @@ import { EmailLinkService } from './email-link.service';
 import { EmailTrackingService } from './email-tracking.service';
 import { EmailTrackingController } from './email-tracking.controller';
 import { TrackingEmailSender } from './tracking-email-sender';
-import { EmailTrackingPluginOptions, setLicenceStatus, setOptions, startEvaluation, getLicenceStatus, stopEvaluation, getOptions, applyGeneratedSigningSecret } from './options';
+import { EmailTrackingPluginOptions, setLicenceStatus, setOptions, startEvaluation, getLicenceStatus, stopEvaluation, getOptions, applyGeneratedSigningSecret, setStatsProvider, getStatsProvider } from './options';
 import { ensureStoredSecret } from './stored-secret';
 import { EmailTrackingAdminResolver, emailTrackingAdminApiSchema } from './admin-api';
 
@@ -138,6 +138,15 @@ export class EmailTrackingPlugin {
     static getUpdateChecker(): UpdateChecker | null { return EmailTrackingPlugin.updateChecker; }
     static getPackageVersion(): string { return PKG_VERSION; }
     static getPackageName(): string { return PKG_NAME; }
+    static getPluginId(): string { return PLUGIN_ID; }
+
+    /** Wire the 30-day usage stats (numbers only) into both the evaluation
+     *  client and the heartbeat, so the licence server sees what the plugin
+     *  did before and after purchase. Called by the service at init. */
+    static setStatsProvider(fn: () => Promise<Record<string, number>>): void {
+        setStatsProvider(fn);
+        EmailTrackingPlugin.heartbeat?.setStatsProvider(fn);
+    }
 
     static init(options: EmailTrackingPluginOptions): Type<EmailTrackingPlugin> {
         setOptions(options);
@@ -190,6 +199,8 @@ export class EmailTrackingPlugin {
                 packageVersion: PKG_VERSION,
                 licenceKey: options.licenceKey,
                 publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY),
+                // Lazy: the service installs the real provider after bootstrap.
+                statsProvider: () => getStatsProvider()?.() ?? {},
             });
             EmailTrackingPlugin.heartbeat.start();
         }

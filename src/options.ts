@@ -1,4 +1,4 @@
-import { EvaluationClient, EvaluationState, LicenceStatus, RetentionOptions } from '@huloglobal/vendure-licence-sdk';
+import { EvaluationClient, EvaluationState, EvalStatsProvider, LicenceStatus, RetentionOptions } from '@huloglobal/vendure-licence-sdk';
 
 export interface EmailTrackingPluginOptions {
     /** Public host of the Vendure server. Embedded in outgoing pixel +
@@ -133,14 +133,29 @@ export function setLicenceStatus(status: LicenceStatus): void {
 }
 
 let evalClient: EvaluationClient | null = null;
+let statsProvider: EvalStatsProvider | null = null;
 
 /** Start the server-anchored 14-day evaluation for unlicensed installs. */
 export function startEvaluation(packageName: string, packageVersion: string): void {
     if (!evalClient) {
         evalClient = new EvaluationClient({ packageName, packageVersion });
+        if (statsProvider) evalClient.setStatsProvider(statsProvider);
     }
     // After a deactivation the existing (stopped) client must run again.
     evalClient.start();
+}
+
+/** Install the 30-day usage-stats provider (numbers only, no PII). The
+ *  evaluation client and the heartbeat both read it, so licensed installs
+ *  keep reporting after purchase and a client created later (after a
+ *  deactivation) picks it up too. */
+export function setStatsProvider(fn: EvalStatsProvider): void {
+    statsProvider = fn;
+    evalClient?.setStatsProvider(fn);
+}
+
+export function getStatsProvider(): EvalStatsProvider | null {
+    return statsProvider;
 }
 
 export function stopEvaluation(): void {

@@ -5,6 +5,71 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-10-11
+
+Retention pass: the plugin now tells the merchant what it did for them and
+walks them through finishing the set-up. One new table (`hulo_plugin_prefs`,
+shared by every HULO plugin; created fail-soft at boot). Requires
+`@huloglobal/vendure-licence-sdk` 0.15.0.
+
+### Added
+- **Weekly report.** Every Monday at 08:00 (server-local) the worker emails
+  last week's figures — emails tracked, opens, link clicks, bounces and
+  complaints, open rate — each against the previous week, plus next steps
+  taken from the set-up checklist and a link to the admin page. Sent through
+  the host's `SMTP_SERVER`/`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
+  `SMTP_PASSWORD`/`SMTP_PASS` and `SMTP_FROM` environment (the plugin has no
+  mailer of its own); without SMTP nothing is sent and nothing breaks. The
+  recipient defaults to the licence's customer email, else the address given
+  for the trial reminder. Admin endpoints under `/email-track/digest/`:
+  `GET settings`, `POST settings` (`{enabled?, recipient?}`), `POST
+  send-test` (`{to?}`) and `GET preview` (HTML). The Email Log page has a
+  "Weekly report" card (toggle, recipient, last/next send, Send me a test,
+  Preview).
+- **Set-up checklist** at the top of the Email Log page and
+  `GET /email-track/setup`: sender wrapped (a log row in the last 30 days),
+  `publicBaseUrl` set to a public host, bounce webhook secret configured,
+  first open or click recorded. The undone items become the weekly report's
+  tips. "Hide" (per browser) once everything is done; the card returns if
+  an item comes undone.
+- **Dashboard widget** "Email Tracking" (Dashboard → Add widget): emails
+  tracked, opens and clicks for the last 7 days, the licence notice when a
+  trial or key is about to end, and a link to the page. Backed by
+  `GET /email-track/widget`.
+- **Usage stats to the licence server.** `emailsTracked`, `emailOpens`,
+  `emailClicks`, `emailsBounced` and `openRatePct` for the last 30 days
+  (numbers only, no addresses) go with the evaluation ping and, from this
+  version, with the daily heartbeat too, so renewal mail can say what the
+  plugin did. `HULO_HEARTBEAT_DISABLED=true` still stops the heartbeat.
+- **Licence banner.** `GET /email-track/licence/status` now carries
+  `notice` (trial ending / key expiring / evaluation ended),
+  `premiumFeatures` and `recentStats` (top three non-zero 30-day figures).
+  The licensed banner shows "renews automatically — current key valid
+  until <date>" for subscriptions and the notice in an amber strip; the
+  trial banner has "Email me before it ends" (`POST /email-track/eval/remind-me`
+  `{email}`, forwarded to the licence server and kept as the report's
+  default recipient), the premium feature list and a "So far: …" line; the
+  free banner shows the same with "During your evaluation: …" once the
+  evaluation has run.
+- **By template** table (30 days: sent, opened, open rate, clicked, click
+  rate, bounced, failed) under the summary cards, and an **Export CSV**
+  button that downloads the current filter. Both are premium: on the free
+  tier they show an unlock chip instead of an error toast.
+- Every "needs a licence" failure (HTTP 402, or an error code of
+  `premium-feature`, `licence-required` or `licence_required`) renders one
+  message in the admin: "<what you tried> needs a licence — start the free
+  trial or activate a key at the top of this page."
+
+### Changed
+- One update banner instead of two. "Dismiss" now remembers the dismissed
+  version in the browser; the banner returns for the next release.
+- The help drawer no longer promises a resend action that does not exist;
+  the third card describes the per-message open and click history.
+
+### Fixed
+- The second update banner was fed by a status request the page never
+  made, so it could never appear; removed with its dead code.
+
 ## [0.14.3] — 2026-09-28
 
 Follow-up to the 0.14.2 hardening pass. No new tables or columns.

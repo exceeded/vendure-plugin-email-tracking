@@ -126,11 +126,20 @@ your own plugin code and get the same engagement tracking.
 
 ### Admin UI
 
-- Global **Email Log** page with status totals, filter row, paginated
-  list, expand-row detail showing both the open and click history
-  tables with location + device + client per row.
+- Global **Email Log** page (Customers → Email Log) with the set-up
+  checklist, weekly-report card, status totals, a **By template** table
+  (open and click rates per email type, premium), **Export CSV**, filter
+  row, paginated list, and an expand-row detail showing both the open and
+  click history tables with location + device + client per row.
 - **Per-customer Emails tab** filtered to that customer.
-- **Update banner** when a new plugin version is published to npm.
+- **Dashboard widget** — Dashboard → Add widget → **Email Tracking**:
+  emails tracked, opens and clicks for the last 7 days plus a link to the
+  page.
+- **Licence banner** with the trial countdown, "Email me before it ends",
+  the premium feature list, what the plugin has done so far, and an amber
+  notice in the last days of a trial or key.
+- **Update banner** when a new plugin version is published to npm
+  (Dismiss remembers the version).
 
 ### CSV export
 
@@ -155,6 +164,53 @@ sender is never stalled by one long DELETE), prunes `email_link` rows
 past their `expiresAt` or older than `days`, is `.unref()`'d so it never
 blocks shutdown, and fails soft on DB hiccups.
 
+## Weekly report, setup checklist and dashboard widget
+
+**Weekly report.** Every Monday at 08:00 (server-local time) the worker
+emails a short report for the previous seven days: emails tracked, opens
+recorded, link clicks, bounces and complaints caught, and the open rate —
+each with the change against the week before — followed by up to three
+next steps taken from the set-up checklist and a link to the Email Log
+page. Trial and free-tier installs also see what a licence switches on.
+The report is sent once per install (safe with several workers).
+
+- **Who gets it.** The address in the "Weekly report" card on the Email Log
+  page; when empty, the licence's customer email, else the address given
+  for the trial reminder. The card shows the default as a placeholder.
+- **Turning it off / changing the recipient.** Email Log → Weekly report:
+  toggle, recipient box, **Send me a test** (sends this week's figures now;
+  does not move the weekly clock) and **Preview** (opens the HTML in a new
+  tab). The same via the API: `GET /email-track/digest/settings`,
+  `POST /email-track/digest/settings` `{ enabled?, recipient? }`,
+  `POST /email-track/digest/send-test` `{ to? }`, `GET /email-track/digest/preview`.
+- **SMTP requirement.** The plugin has no mailer of its own: it uses the
+  host's `SMTP_SERVER` (or `SMTP_HOST`), `SMTP_PORT`, `SMTP_USER`,
+  `SMTP_PASSWORD` (or `SMTP_PASS`) and `SMTP_FROM` environment variables
+  through `nodemailer` (already a peer dependency). With no SMTP host set
+  the report is simply not sent; every failure is logged, never thrown.
+- Settings live in the shared `hulo_plugin_prefs` table (one row per
+  plugin and key), created at boot if missing.
+
+**Set-up checklist.** The first card on the Email Log page
+(`GET /email-track/setup`) runs four real checks: the tracking sender is
+wrapped (a log row in the last 30 days), `publicBaseUrl` points at a public
+host, a bounce webhook secret is configured, and at least one open or
+click has been recorded. Each row has a hint and a docs link; **Hide**
+puts it away in that browser once everything is done, and it comes back if
+a check fails again. The undone items are the weekly report's tips.
+
+**Dashboard widget.** Dashboard → Add widget → **Email Tracking** shows
+emails tracked, opens and clicks for the last 7 days (`GET /email-track/widget`),
+the licence notice when a trial or key is about to end, and an
+"Open Email Tracking" link. Needs the `ReadCustomer` permission, like the
+page.
+
+**Usage stats.** The same five figures for the last 30 days
+(`emailsTracked`, `emailOpens`, `emailClicks`, `emailsBounced`,
+`openRatePct` — counts only, never addresses) go with the evaluation ping
+and the daily heartbeat so renewal and trial emails can say what the
+plugin did. `HULO_HEARTBEAT_DISABLED=true` stops the heartbeat as before.
+
 ## HTTP endpoints
 
 | Method | Path | Auth | Purpose |
@@ -171,6 +227,14 @@ blocks shutdown, and fails soft on DB hiccups.
 | `POST` | `/email-track/suppression` | admin | add a suppression |
 | `DELETE` | `/email-track/suppression/:recipient` | admin | lift a suppression |
 | `GET` | `/email-track/status` | admin | version + licence + update status |
+| `GET` | `/email-track/licence/status` | admin | licence/evaluation state, lifecycle notice, premium features, recent stats |
+| `POST` | `/email-track/eval/remind-me` | admin | `{ email }` — trial-ending reminder opt-in |
+| `GET` | `/email-track/setup` | admin | set-up checklist |
+| `GET` | `/email-track/widget` | admin | dashboard widget figures (7 days) |
+| `GET` | `/email-track/digest/settings` | admin | weekly report settings |
+| `POST` | `/email-track/digest/settings` | admin | `{ enabled?, recipient? }` |
+| `POST` | `/email-track/digest/send-test` | admin | `{ to? }` — send this week's report now |
+| `GET` | `/email-track/digest/preview` | admin | this week's report as HTML |
 
 ## Lost your licence key?
 

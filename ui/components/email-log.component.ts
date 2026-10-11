@@ -80,7 +80,7 @@ interface EmailDetail extends EmailRow {
                     <button class="gbtn gbtn-primary gbtn-sm" *ngIf="licMeta?.selfUpdate?.allowed" (click)="runSelfUpdate()" [disabled]="updating">{{ updating ? updateProgress : 'Update now' }}</button>
                     <button class="gbtn gbtn-outline gbtn-sm" (click)="copyUpdateCmd()">{{ cmdCopied ? 'Copied ✓' : 'Copy command' }}</button>
                     <a href="https://huloglobal.com/vendure-plugins/email-tracking/changelog/" target="_blank" class="gbtn gbtn-outline gbtn-sm">What&rsquo;s new ↗</a>
-                    <button class="gbtn gbtn-outline gbtn-sm" (click)="updateDismissed = true">Dismiss</button>
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="dismissUpdate()">Dismiss</button>
                 </div>
             </div>
         </vdr-page-block>
@@ -96,6 +96,7 @@ interface EmailDetail extends EmailRow {
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
                     <a href="https://huloglobal.com/vendure-plugins/email-tracking/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
+                <div class="lic-notice" *ngIf="licMeta.notice?.message">{{ licMeta.notice.message }}</div>
             </div>
         </vdr-page-block>
         <vdr-page-block *ngIf="licMeta && !licMeta.licensed">
@@ -107,11 +108,20 @@ interface EmailDetail extends EmailRow {
                     </ng-container>
                     <ng-container *ngIf="licMeta.eval?.daysRemaining == null">everything is enabled.</ng-container>
                     Afterwards the plugin drops to the free tier.
+                    <div class="lic-sub" *ngIf="licMeta.premiumFeatures?.length">Included now: {{ licMeta.premiumFeatures.join(' · ') }}</div>
+                    <div class="lic-sub" *ngIf="licMeta.recentStats?.length"><strong>So far:</strong> {{ statsLine() }}</div>
                 </div>
                 <div *ngIf="licMeta.tier !== 'trial'">
                     <strong>🔓 Free tier</strong> — premium features need a licence. Start your <strong>14-day free trial</strong> below (card required, nothing charged until day 15, cancel any time) or buy a lifetime licence. Premium features are paused; your configuration is kept and reactivates instantly with a key.
+                    <div class="lic-sub" *ngIf="licMeta.premiumFeatures?.length">Switch on with a licence: {{ licMeta.premiumFeatures.join(' · ') }}</div>
+                    <div class="lic-sub" *ngIf="licMeta.recentStats?.length"><strong>{{ licMeta.eval?.source === 'server' ? 'During your evaluation:' : 'So far:' }}</strong> {{ statsLine() }}</div>
                 </div>
                 <div class="lic-actions">
+                    <ng-container *ngIf="licMeta.tier === 'trial' && !remindMeSent">
+                        <input class="lic-key" style="min-width:200px" type="email" placeholder="you@company.com" [(ngModel)]="remindEmail" [disabled]="remindMeSending">
+                        <button class="gbtn gbtn-outline gbtn-sm" (click)="sendRemindMe()" [disabled]="remindMeSending || !remindEmail">{{ remindMeSending ? 'Saving…' : 'Email me before it ends' }}</button>
+                    </ng-container>
+                    <span *ngIf="licMeta.tier === 'trial' && remindMeSent" style="font-size:12.5px;font-weight:600">✓ We'll email you before it ends</span>
                     <input class="lic-key" type="text" placeholder="Paste licence key (eyJhbGciOi…)" [(ngModel)]="licKeyInput" [disabled]="licActivating">
                     <button class="gbtn gbtn-primary gbtn-sm" (click)="activateLicence()" [disabled]="licActivating || !licKeyInput">{{ licActivating ? 'Verifying…' : 'Activate' }}</button>
                     <select [(ngModel)]="buyPlan" [disabled]="buying" style="padding:5px 9px;border:1px solid #d1d5db;border-radius:7px;font-size:12.5px;background:#fff;color:inherit"><option value="monthly">Monthly · 14-day free trial</option><option value="annual">Annual · 14-day free trial, 2 months free</option><option value="lifetime">Lifetime · one-off</option></select>
@@ -119,6 +129,7 @@ interface EmailDetail extends EmailRow {
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
                     <a href="https://huloglobal.com/vendure-plugins/email-tracking/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
+                <div class="lic-notice" *ngIf="licMeta.notice?.message">{{ licMeta.notice.message }}</div>
             </div>
         </vdr-page-block>
 
@@ -137,8 +148,8 @@ interface EmailDetail extends EmailRow {
                     </div>
                     <div class="hulo-help-card">
                         <div class="hulo-help-num">3</div>
-                        <h4>Retry or replay any message</h4>
-                        <p>Click a row to open the message. From the details pane you can resend on failed deliveries.</p>
+                        <h4>Open any message for its history</h4>
+                        <p>Click a row to see the SMTP reply, every open with client and location, and every link clicked.</p>
                     </div>
                 </div>
                 <div class="hulo-help-links">
@@ -149,16 +160,38 @@ interface EmailDetail extends EmailRow {
             </div>
         </vdr-page-block>
 
-        <vdr-page-block *ngIf="updateBanner">
-            <div class="update-banner" [class.major]="updateBanner.isMajor">
-                <div>
-                    <strong>📦 Update available</strong>
-                    {{ updateBanner.packageName }} {{ updateBanner.current }} → <strong>{{ updateBanner.latest }}</strong>
-                    <span *ngIf="updateBanner.isMajor" class="major-pill">major</span>
+        <vdr-page-block *ngIf="showSetup() || digest">
+            <div class="hulo-setup-grid" [class.single]="!showSetup()">
+                <div class="hulo-card" *ngIf="showSetup()">
+                    <div class="hulo-card-head">
+                        <h4>Set-up checklist</h4>
+                        <a class="hulo-link" (click)="hideSetup()" *ngIf="setup?.complete">Hide</a>
+                    </div>
+                    <div class="setup-row" *ngFor="let it of setup?.items">
+                        <span class="setup-dot" [class.done]="it.done" aria-hidden="true"></span>
+                        <div class="setup-body">
+                            <div class="setup-label">{{ it.label }}</div>
+                            <div class="setup-hint">{{ it.hint }}</div>
+                        </div>
+                        <a *ngIf="it.url && !it.done" [href]="it.url" target="_blank" rel="noopener" class="hulo-link">How ↗</a>
+                    </div>
                 </div>
-                <div class="actions">
-                    <a [href]="'https://github.com/exceeded/vendure-plugin-email-tracking/releases/tag/v' + updateBanner.latest" target="_blank" class="btn btn-sm btn-link">Release notes ↗</a>
-                    <button class="btn btn-sm" (click)="dismissUpdate()">Dismiss</button>
+                <div class="hulo-card" *ngIf="digest">
+                    <div class="hulo-card-head">
+                        <h4>Weekly report</h4>
+                        <label class="hulo-toggle"><input type="checkbox" [checked]="digest.enabled" (change)="toggleDigest()" [disabled]="digestSaving"> {{ digest.enabled ? 'On' : 'Off' }}</label>
+                    </div>
+                    <p class="setup-hint" style="margin:0 0 8px">Every Monday at 08:00 (server time): emails tracked, opens, clicks, bounces and open rate for the week, with next steps.</p>
+                    <div class="digest-row">
+                        <input class="form-input" type="email" [(ngModel)]="digestRecipient" [placeholder]="digest.defaultRecipient ? 'Defaults to ' + digest.defaultRecipient : 'Recipient email'" [disabled]="digestSaving">
+                        <button class="btn btn-sm btn-secondary" (click)="saveDigestRecipient()" [disabled]="digestSaving">Save</button>
+                    </div>
+                    <div class="setup-hint" *ngIf="!digest.recipient && !digest.defaultRecipient">No recipient yet — enter one above, or activate a licence or set a trial reminder email so one is known.</div>
+                    <div class="setup-hint">Last sent {{ digest.lastSentAt ? (digest.lastSentAt | date:'mediumDate') : 'never' }} · next {{ digest.nextDueAt ? (digest.nextDueAt | date:'medium') : '—' }}</div>
+                    <div class="digest-row" style="margin-top:8px">
+                        <button class="btn btn-sm btn-secondary" (click)="sendDigestTest()" [disabled]="digestTesting">{{ digestTesting ? 'Sending…' : 'Send me a test' }}</button>
+                        <button class="btn btn-sm btn-link" (click)="previewDigest()">Preview</button>
+                    </div>
                 </div>
             </div>
         </vdr-page-block>
@@ -190,6 +223,33 @@ interface EmailDetail extends EmailRow {
                     <div class="lbl">Opens</div>
                     <div class="sub">{{ summary.clicks || 0 }} clicks</div>
                 </div>
+            </div>
+            <div class="hulo-card" style="margin-bottom:16px">
+                <div class="hulo-card-head">
+                    <h4>By template <span class="setup-hint">last 30 days</span></h4>
+                    <div class="digest-row">
+                        <span class="unlock-chip" *ngIf="exportLocked">🔒 Premium — <a class="hulo-link" (click)="scrollToLicence()">start the free trial or activate a key</a></span>
+                        <button class="btn btn-sm btn-secondary" (click)="exportCsv()" [disabled]="exporting">{{ exporting ? 'Exporting…' : 'Export CSV' }}</button>
+                    </div>
+                </div>
+                <div *ngIf="byTemplateLocked" class="unlock-chip">🔒 Per-template open and click rates are a premium feature — <a class="hulo-link" (click)="scrollToLicence()">start the free trial or activate a key</a> at the top of this page.</div>
+                <div *ngIf="!byTemplateLocked && byTemplateLoading" class="setup-hint">Loading…</div>
+                <div *ngIf="!byTemplateLocked && !byTemplateLoading && byTemplate.length === 0" class="setup-hint">No emails in the last 30 days.</div>
+                <table class="table table-compact" *ngIf="!byTemplateLocked && byTemplate.length > 0" style="margin-top:0">
+                    <thead><tr><th>Template</th><th>Sent</th><th>Opened</th><th>Open rate</th><th>Clicked</th><th>Click rate</th><th>Bounced</th><th>Failed</th></tr></thead>
+                    <tbody>
+                        <tr *ngFor="let t of byTemplate">
+                            <td><span class="pill type-pill">{{ t.type }}</span></td>
+                            <td>{{ t.sent }}</td>
+                            <td>{{ t.opened }}</td>
+                            <td>{{ pct(t.openRate) }}</td>
+                            <td>{{ t.clicked }}</td>
+                            <td>{{ pct(t.clickRate) }}</td>
+                            <td>{{ t.bounced }}</td>
+                            <td>{{ t.failed }}</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </vdr-page-block>
 
@@ -348,6 +408,28 @@ interface EmailDetail extends EmailRow {
         .upd-cmd { font-family: monospace; font-size: 12px; background: rgba(0,0,0,.06); padding: 2px 6px; border-radius: 5px; }
         [data-theme='dark'] .upd-cmd, :host-context([data-theme='dark']) .upd-cmd { background: rgba(255,255,255,.1); }
         .lic-key { padding:5px 9px; border:1px solid var(--gb-ui-border, #d1d5db); border-radius:7px; font-size:12.5px; min-width:280px; background:#fff; color:#0f172a; }
+        .lic-sub { font-size:12px; margin-top:4px; color:#78350f; }
+        .lic-notice { flex-basis:100%; padding:8px 12px; border-radius:8px; background:#fde68a; border:1px solid #f59e0b; color:#78350f; font-size:12.5px; font-weight:600; }
+
+        /* ── Set-up checklist + weekly report cards ─────────────────── */
+        .hulo-setup-grid { display:grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap:12px; }
+        .hulo-setup-grid.single { grid-template-columns: 1fr; }
+        .hulo-card { padding:14px 18px; border:1px solid var(--color-component-border-200); border-radius:8px; background:var(--color-component-bg-100); color:var(--color-text-100, inherit); }
+        .hulo-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+        .hulo-card-head h4 { margin:0; font-size:14px; }
+        .hulo-link { color:#b45309; cursor:pointer; text-decoration:underline; font-size:12px; font-weight:600; }
+        .setup-row { display:flex; align-items:flex-start; gap:10px; padding:6px 0; border-top:1px solid var(--color-component-border-200); }
+        .setup-row:first-of-type { border-top:0; }
+        .setup-dot { flex:0 0 auto; width:10px; height:10px; border-radius:999px; background:#cbd5e1; margin-top:5px; }
+        .setup-dot.done { background:#10b981; }
+        .setup-body { flex:1 1 auto; min-width:0; }
+        .setup-label { font-size:13px; font-weight:600; }
+        .setup-hint { font-size:11.5px; color:var(--color-component-color-300); }
+        .hulo-toggle { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
+        .digest-row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+        .digest-row .form-input { flex:1 1 180px; padding:4px 8px; height:30px; border:1px solid var(--color-component-border-200); background:var(--color-component-bg-100); color:var(--color-text-100, inherit); border-radius:4px; }
+        .unlock-chip { display:inline-block; padding:4px 10px; border-radius:999px; background:#fef3c7; border:1px solid #fcd34d; color:#92400e; font-size:12px; }
+        @media (max-width: 900px) { .hulo-setup-grid { grid-template-columns: 1fr; } }
 
         :host { color: var(--color-text-100, inherit); }
 
@@ -450,17 +532,6 @@ interface EmailDetail extends EmailRow {
         .help-text { color: var(--color-component-color-300); font-size: 11px; }
         .muted { color: var(--color-component-color-300); }
 
-        .update-banner {
-            display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;
-            padding: 12px 16px; border-radius: 8px;
-            background: #ecfeff; border: 1px solid #67e8f9;
-            color: #155e75; font-size: 13px;
-        }
-        .update-banner.major { background: #fef3c7; border-color: #fde68a; color: #92400e; }
-        .update-banner strong { font-weight: 700; }
-        .update-banner .major-pill { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 8px; background: #f59e0b; color: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; }
-        .update-banner .actions { display: flex; gap: 8px; align-items: center; }
-
         /* Mobile under 768px */
         @media (max-width: 767px) {
             /* Interactive elements in our component meet the 44px tap target */
@@ -482,8 +553,6 @@ interface EmailDetail extends EmailRow {
             .card-block > table th, .card-block > table td { padding: 8px 10px; }
             .detail-row > td { padding: 12px; display: block; }
             .detail-grid { grid-template-columns: 1fr; gap: 10px; }
-            .update-banner { flex-direction: column; align-items: flex-start; }
-            .update-banner .actions { width: 100%; justify-content: flex-end; }
             .pager { justify-content: center; }
         }
     `],
@@ -510,10 +579,157 @@ export class EmailLogComponent implements OnInit, OnDestroy {
     expandedId: number | null = null;
     detail: EmailDetail | null = null;
 
-    updateBanner: { packageName: string; current: string; latest: string; isMajor: boolean } | null = null;
     /** Toggles the shared HULO help drawer under the hero. */
     helpOpen = false;
     private dismissKey = 'huloglobal-email-tracking-update-dismissed';
+    private setupHiddenKey = 'hulo-vendure-plugin-email-tracking-setup-hidden';
+
+    setup: { items: Array<{ key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }>; complete: boolean } | null = null;
+    setupHidden = false;
+    digest: any = null;
+    digestRecipient = '';
+    digestSaving = false;
+    digestTesting = false;
+    byTemplate: any[] = [];
+    byTemplateLoading = false;
+    byTemplateLocked = false;
+    exporting = false;
+    exportLocked = false;
+    remindEmail = '';
+    remindMeSending = false;
+    remindMeSent = false;
+
+    /** One message for every "needs a licence" failure (402 or a licence error code). */
+    errMsg(e: any, what: string): string {
+        const code = e?.error?.error;
+        if (e?.status === 402 || code === 'licence-required' || code === 'licence_required' || code === 'premium-feature') {
+            return `${what} needs a licence — start the free trial or activate a key at the top of this page.`;
+        }
+        const m = e?.error?.message || (typeof e?.error?.error === 'string' ? e.error.error : '') || e?.message;
+        return m ? `${what} failed: ${m}` : `${what} failed`;
+    }
+
+    statsLine(): string {
+        return (this.licMeta?.recentStats || []).map((s: any) => `${s.value} ${s.label}`).join(' · ');
+    }
+
+    pct(v: any): string { const n = Number(v); return Number.isFinite(n) ? `${Math.round(n * 1000) / 10}%` : '—'; }
+
+    scrollToLicence() { try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { window.scrollTo(0, 0); } }
+
+    // ── Set-up checklist ──────────────────────────────────────────────
+    loadSetup() {
+        this.http.get<any>('/email-track/setup').subscribe({
+            next: r => {
+                this.setup = r;
+                try { this.setupHidden = localStorage.getItem(this.setupHiddenKey) === '1'; } catch { this.setupHidden = false; }
+                this.cdr.markForCheck();
+            },
+            error: () => undefined,
+        });
+    }
+    /** Shown while anything is undone; once complete it stays until hidden. */
+    showSetup(): boolean {
+        if (!this.setup) return false;
+        if (!this.setup.complete) return true;
+        return !this.setupHidden;
+    }
+    hideSetup() {
+        try { localStorage.setItem(this.setupHiddenKey, '1'); } catch {}
+        this.setupHidden = true;
+    }
+
+    // ── Weekly report ─────────────────────────────────────────────────
+    loadDigest() {
+        this.http.get<any>('/email-track/digest/settings').subscribe({
+            next: d => { this.digest = d; this.digestRecipient = d?.recipient || ''; this.cdr.markForCheck(); },
+            error: () => undefined,
+        });
+    }
+    toggleDigest() {
+        if (!this.digest) return;
+        this.digestSaving = true;
+        this.http.post<any>('/email-track/digest/settings', { enabled: !this.digest.enabled }).subscribe({
+            next: d => { this.digest = d; this.digestSaving = false; this.notify.success(d.enabled ? 'Weekly report on' : 'Weekly report off'); this.cdr.markForCheck(); },
+            error: e => { this.digestSaving = false; this.notify.error(this.errMsg(e, 'Saving the weekly report setting')); this.cdr.markForCheck(); },
+        });
+    }
+    saveDigestRecipient() {
+        this.digestSaving = true;
+        this.http.post<any>('/email-track/digest/settings', { recipient: (this.digestRecipient || '').trim() || null }).subscribe({
+            next: d => { this.digest = d; this.digestRecipient = d?.recipient || ''; this.digestSaving = false; this.notify.success(d.recipient ? `Weekly report goes to ${d.recipient}` : 'Recipient cleared — the default is used'); this.cdr.markForCheck(); },
+            error: e => { this.digestSaving = false; this.notify.error(e?.error?.message || this.errMsg(e, 'Saving the recipient')); this.cdr.markForCheck(); },
+        });
+    }
+    sendDigestTest() {
+        this.digestTesting = true;
+        this.http.post<any>('/email-track/digest/send-test', {}).subscribe({
+            next: r => {
+                this.digestTesting = false;
+                if (r?.sent) this.notify.success(`Test report sent to ${r.to}`);
+                else this.notify.error(r?.reason === 'no-recipient' ? 'No recipient — enter one above first' : `Not sent: ${r?.reason || 'unknown error'}`);
+                this.cdr.markForCheck();
+            },
+            error: e => { this.digestTesting = false; this.notify.error(this.errMsg(e, 'Sending the test report')); this.cdr.markForCheck(); },
+        });
+    }
+    /** Fetched with the admin session (works for cookie and bearer auth) and opened as a Blob URL. */
+    previewDigest() {
+        this.http.get('/email-track/digest/preview', { responseType: 'text' }).subscribe({
+            next: html => {
+                const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+                window.open(url, '_blank', 'noopener');
+                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+            },
+            error: e => this.notify.error(this.errMsg(e, 'Preview')),
+        });
+    }
+
+    // ── Trial reminder ────────────────────────────────────────────────
+    sendRemindMe() {
+        const email = (this.remindEmail || '').trim();
+        if (!email) return;
+        this.remindMeSending = true;
+        this.http.post<any>('/email-track/eval/remind-me', { email }).subscribe({
+            next: () => { this.remindMeSending = false; this.remindMeSent = true; this.notify.success('Reminder set — check your inbox for a confirmation'); this.loadDigest(); this.cdr.markForCheck(); },
+            error: e => { this.remindMeSending = false; this.notify.error(e?.error?.message || 'Could not save the reminder — try again shortly'); this.cdr.markForCheck(); },
+        });
+    }
+
+    // ── By template + CSV export (premium) ────────────────────────────
+    loadByTemplate() {
+        this.byTemplateLoading = true;
+        this.http.get<any>('/email-track/log/stats/by-template?fromDays=30').subscribe({
+            next: r => { this.byTemplate = r?.types || []; this.byTemplateLocked = false; this.byTemplateLoading = false; this.cdr.markForCheck(); },
+            error: e => {
+                this.byTemplateLoading = false;
+                if (e?.status === 402) this.byTemplateLocked = true;
+                else this.notify.error(this.errMsg(e, 'Loading per-template stats'));
+                this.cdr.markForCheck();
+            },
+        });
+    }
+    exportCsv() {
+        this.exporting = true;
+        this.http.get(`/email-track/log/export.csv?${this.buildParams()}`, { responseType: 'blob' }).subscribe({
+            next: blob => {
+                this.exporting = false;
+                this.exportLocked = false;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `email-log-${new Date().toISOString().slice(0, 10)}.csv`;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 10_000);
+                this.cdr.markForCheck();
+            },
+            error: e => {
+                this.exporting = false;
+                if (e?.status === 402) this.exportLocked = true;
+                this.notify.error(this.errMsg(e, 'CSV export'));
+                this.cdr.markForCheck();
+            },
+        });
+    }
 
     constructor(
         private http: HttpClient,
@@ -546,7 +762,7 @@ export class EmailLogComponent implements OnInit, OnDestroy {
             },
             error: e => {
                 this.updating = false;
-                this.notify.error(e?.error?.message || 'Update failed — nothing was changed');
+                this.notify.error(e?.error?.message || this.errMsg(e, 'Update'));
                 this.cdr.markForCheck();
             },
         });
@@ -592,7 +808,13 @@ export class EmailLogComponent implements OnInit, OnDestroy {
 
     loadLicMeta() {
         this.http.get<any>('/email-track/licence/status').subscribe({
-            next: m => { this.licMeta = m; this.cdr.markForCheck(); },
+            next: m => {
+                this.licMeta = m;
+                let dismissed = '';
+                try { dismissed = localStorage.getItem(this.dismissKey) || ''; } catch {}
+                this.updateDismissed = !!m?.update?.latest && dismissed === m.update.latest;
+                this.cdr.markForCheck();
+            },
             error: () => undefined,
         });
     }
@@ -615,7 +837,7 @@ export class EmailLogComponent implements OnInit, OnDestroy {
                 }
                 this.cdr.markForCheck();
             },
-            error: e => { this.buying = false; this.notify.error(e?.error?.message || 'Could not start checkout — try again shortly'); this.cdr.markForCheck(); },
+            error: e => { this.buying = false; this.notify.error(e?.error?.message || this.errMsg(e, 'Starting checkout')); this.cdr.markForCheck(); },
         });
     }
     checkClaim(force = false) {
@@ -648,13 +870,13 @@ export class EmailLogComponent implements OnInit, OnDestroy {
         if (l.trialEndsAt && new Date(l.trialEndsAt).getTime() > Date.now()) {
             return `free trial on the ${l.plan} plan — first charge on ${d(l.trialEndsAt)}; cancel any time before then via Manage billing`;
         }
-        return `${l.plan} subscription — renews automatically${l.expiresAt ? ' (current key valid until ' + d(l.expiresAt) + ')' : ''}`;
+        return `${l.plan} subscription — renews automatically${l.expiresAt ? ' — current key valid until ' + d(l.expiresAt) : ''}`;
     }
     openPortal() {
         this.portalOpening = true;
         this.http.post<any>('/email-track/licence/portal-link', {}).subscribe({
             next: r => { this.portalOpening = false; if (r?.url) window.open(r.url, '_blank', 'noopener'); this.cdr.markForCheck(); },
-            error: e => { this.portalOpening = false; this.notify.error(e?.error?.message || 'Could not open the billing portal'); this.cdr.markForCheck(); },
+            error: e => { this.portalOpening = false; this.notify.error(e?.error?.message || this.errMsg(e, 'Opening the billing portal')); this.cdr.markForCheck(); },
         });
     }
     buyLifetime() { this.buyPlan = 'lifetime'; this.buyLicence(); }
@@ -689,28 +911,16 @@ export class EmailLogComponent implements OnInit, OnDestroy {
         }
         const oCode = this.route.snapshot.queryParamMap.get('orderCode');
         if (oCode) this.filterOrderCode = oCode;
+        this.loadSetup();
+        this.loadDigest();
+        this.loadByTemplate();
         this.load();
     }
 
-    loadStatus() {
-        this.http.get<any>('/email-track/status').subscribe({
-            next: (s) => {
-                const u = s?.update;
-                if (!u?.updateAvailable || !u.latest) return;
-                let dismissed = '';
-                try { dismissed = localStorage.getItem(this.dismissKey) || ''; } catch {}
-                if (dismissed === u.latest) return;
-                this.updateBanner = { packageName: u.packageName, current: u.current, latest: u.latest, isMajor: !!u.isMajor };
-                this.cdr.markForCheck();
-            },
-            error: () => { /* nice-to-have, don't break the page */ },
-        });
-    }
-
     dismissUpdate() {
-        if (!this.updateBanner) return;
-        try { localStorage.setItem(this.dismissKey, this.updateBanner.latest); } catch {}
-        this.updateBanner = null;
+        const latest = this.licMeta?.update?.latest;
+        if (latest) { try { localStorage.setItem(this.dismissKey, latest); } catch {} }
+        this.updateDismissed = true;
     }
 
     totalAll(): number {
@@ -757,9 +967,10 @@ export class EmailLogComponent implements OnInit, OnDestroy {
             this.expandedId = null;
             this.detail = null;
             this.cdr.markForCheck();
-        }).catch(() => {
+        }).catch((e: any) => {
             this.loading = false;
-            this.notify.error('Failed to load email log');
+            this.notify.error(this.errMsg(e, 'Loading the email log'));
+            this.cdr.markForCheck();
         });
     }
 
@@ -773,7 +984,7 @@ export class EmailLogComponent implements OnInit, OnDestroy {
         this.detail = null;
         this.http.get<EmailDetail>(`/email-track/log/${id}`).subscribe({
             next: (d) => { this.detail = d; this.cdr.markForCheck(); },
-            error: () => this.notify.error('Failed to load email detail'),
+            error: e => this.notify.error(this.errMsg(e, 'Loading the email detail')),
         });
     }
 

@@ -1,14 +1,160 @@
 import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { hashIp, isLicensed, signValue, adapterFor, DbAdapter } from '@huloglobal/vendure-licence-sdk';
+import {
+    hashIp, isLicensed, signValue, adapterFor, DbAdapter,
+    PluginPrefs, WeeklyDigest, WeeklyDigestSettings, DigestStat, DigestTip, DigestMail, DigestInput,
+    smtpTransportFromEnv, describeLicence, licenceLifecycleNotice, formatStat, composeDigest,
+} from '@huloglobal/vendure-licence-sdk';
 import { Logger, ProcessContext, TransactionalConnection } from '@vendure/core';
 import * as nodemailer from 'nodemailer';
 import { EmailLog, EmailLogStatus } from './email-log.entity';
 import { EmailSuppression } from './email-suppression.entity';
 import { lookupGeo } from './geo-lookup';
-import { getLicenceStatus, getOptions, ownTrackingPrefixes, trackingBaseUrl, hasPremiumAccess } from './options';
+import { getLicenceStatus, getOptions, ownTrackingPrefixes, trackingBaseUrl, hasPremiumAccess, getEvalState, configuredSigningSecret, setStatsProvider } from './options';
 import { parseEmailClient } from './parse-ua';
 
 const loggerCtx = 'EmailTrackingService';
+
+/** Package short id — the pref namespace, buy URL slug and heartbeat label. */
+export const PLUGIN_SHORT_ID = 'vendure-plugin-email-tracking';
+export const PLUGIN_DISPLAY_NAME = 'Email Tracking';
+export const ADMIN_ROUTE = 'email-log';
+
+/** What the free tier loses — shown in the trial/free banners and the digest. */
+export const PREMIUM_FEATURES = [
+    'Open and click tracking',
+    'Per-template open and click rates',
+    'CSV export',
+    'Suppression list',
+];
+
+const DAY_MS = 86_400_000;
+
+/** One aggregate row over `email_log` for a time window. */
+export interface LogAggregate {
+    tracked: number;
+    opens: number;
+    clicks: number;
+    bounced: number;
+    opened: number;
+}
+
+/** The stats keys reported to the licence server (eval + heartbeat) and
+ *  rendered in the weekly report. Numbers only, no PII. */
+export function statsFromAggregate(a: Partial<LogAggregate> | null | undefined): Record<string, number> {
+    const n = (v: unknown) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+    const tracked = n(a?.tracked);
+    const opened = n(a?.opened);
+    return {
+        emailsTracked: tracked,
+        emailOpens: n(a?.opens),
+        emailClicks: n(a?.clicks),
+        emailsBounced: n(a?.bounced),
+        openRatePct: tracked > 0 ? Math.round((opened / tracked) * 1000) / 10 : 0,
+    };
+}
+
+/** Merchant-facing labels + formats for the stats keys, in display order. */
+export const STAT_LABELS: Array<{ key: string; label: string; format: DigestStat['format'] }> = [
+    { key: 'emailsTracked', label: 'emails tracked', format: 'count' },
+    { key: 'emailOpens', label: 'opens recorded', format: 'count' },
+    { key: 'emailClicks', label: 'link clicks recorded', format: 'count' },
+    { key: 'emailsBounced', label: 'bounces and complaints caught', format: 'count' },
+    { key: 'openRatePct', label: 'open rate', format: 'percent' },
+];
+
+export function digestStats(current: Record<string, number>, previous?: Record<string, number> | null): DigestStat[] {
+    return STAT_LABELS.map(l => ({
+        key: l.key, label: l.label, format: l.format,
+        value: current[l.key] ?? 0,
+        previous: previous ? (previous[l.key] ?? 0) : null,
+    }));
+}
+
+/** Top `max` non-zero stats formatted for the licence banner ("So far: …"). */
+export function recentStatLines(stats: Record<string, number>, max = 3): Array<{ label: string; value: string }> {
+    return STAT_LABELS
+        .filter(l => (stats[l.key] ?? 0) > 0)
+        .slice(0, max)
+        .map(l => ({ label: l.label, value: formatStat({ key: l.key, label: l.label, value: stats[l.key], format: l.format }) }));
+}
+
+export interface SetupItem {
+    key: string;
+    label: string;
+    done: boolean;
+    hint: string;
+    tab?: string;
+    url?: string;
+}
+
+export interface SetupChecklist {
+    items: SetupItem[];
+    complete: boolean;
+}
+
+export interface SetupFacts {
+    /** Any `email_log` row in the last 30 days — proves the sender is wrapped. */
+    hasRecentLog: boolean;
+    publicBaseUrl: string;
+    /** `bounceWebhookSecret` or a *configured* `signingSecret`. */
+    bounceSecretConfigured: boolean;
+    /** At least one open or click ever recorded. */
+    hasEngagement: boolean;
+}
+
+const DOCS_URL = 'https://huloglobal.com/vendure-plugins/email-tracking/docs/';
+
+/** Pure: the set-up checklist from facts the service gathers. */
+export function buildSetupItems(f: SetupFacts): SetupChecklist {
+    const base = (f.publicBaseUrl || '').trim();
+    const baseIsPublic = !!base && !/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(base);
+    const items: SetupItem[] = [
+        {
+            key: 'sender', label: 'Email sender wrapped', done: f.hasRecentLog,
+            hint: f.hasRecentLog
+                ? 'Vendure\'s outgoing mail is flowing through the tracking sender.'
+                : 'Pass `emailSender: new TrackingEmailSender()` to EmailPlugin.init() so every email is logged. Nothing has been logged in the last 30 days.',
+            url: DOCS_URL,
+        },
+        {
+            key: 'publicBaseUrl', label: 'Public base URL set', done: baseIsPublic,
+            hint: baseIsPublic
+                ? `Pixel and click links point at ${base}.`
+                : 'Set `publicBaseUrl` to your public shop host (https://shop.example.com) so the open pixel and click links resolve from customers\' inboxes.',
+            url: DOCS_URL,
+        },
+        {
+            key: 'bounceWebhook', label: 'Bounce webhook secret configured', done: f.bounceSecretConfigured,
+            hint: f.bounceSecretConfigured
+                ? 'Signed bounce and complaint webhooks are accepted at /email-track/bounce.'
+                : 'Set `bounceWebhookSecret` and point your mail provider\'s bounce webhook at /email-track/bounce — hard bounces and complaints then land on the suppression list automatically.',
+            url: DOCS_URL,
+        },
+        {
+            key: 'engagement', label: 'First open or click recorded', done: f.hasEngagement,
+            hint: f.hasEngagement
+                ? 'Opens and clicks are being recorded.'
+                : 'Recorded once a customer opens a tracked email or clicks a link in it. Needs an active licence or the evaluation — the free tier serves the pixel but does not record.',
+        },
+    ];
+    return { items, complete: items.every(i => i.done) };
+}
+
+/** Tips for the weekly report: the undone checklist items, in order (max 3). */
+export function tipsFromChecklist(list: SetupChecklist, adminUrl: string | null): DigestTip[] {
+    return list.items.filter(i => !i.done).slice(0, 3).map(i => ({
+        title: i.label,
+        body: i.hint,
+        url: i.url || adminUrl || undefined,
+        linkLabel: i.url ? 'Docs' : 'Open in Admin',
+    }));
+}
+
+/** `paid` / `trial` / `free` exactly as `licence/status` reports it. */
+export function effectiveTier(): 'paid' | 'trial' | 'free' {
+    if (getLicenceStatus()?.valid) return 'paid';
+    return getEvalState()?.active ? 'trial' : 'free';
+}
 
 interface SendTrackedMeta {
     /** Logical email type — e.g. 'welcome', 'order-confirmation', 'invoice'. */
@@ -63,13 +209,34 @@ export async function batchedDelete(
 export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDestroy {
     private retentionTimer: NodeJS.Timeout | null = null;
     private retentionFirst: NodeJS.Timeout | null = null;
+    /** Shared `hulo_plugin_prefs` rows for this plugin (digest settings, trial lead). */
+    readonly prefs: PluginPrefs;
+    /** Monday 08:00 (server-local) "what Email Tracking did for you" report. */
+    readonly digest: WeeklyDigest;
 
-    constructor(private connection: TransactionalConnection, private processContext: ProcessContext) {}
+    constructor(private connection: TransactionalConnection, private processContext: ProcessContext) {
+        const query = (sql: string, params?: any[], o?: any) => adapterFor(this.connection.rawConnection).query(sql, params, o);
+        this.prefs = new PluginPrefs(query, PLUGIN_SHORT_ID);
+        this.digest = new WeeklyDigest({
+            pluginId: PLUGIN_SHORT_ID,
+            pluginName: PLUGIN_DISPLAY_NAME,
+            prefs: this.prefs,
+            collect: (from, to) => this.digestCollect(from, to),
+            send: (to, mail) => this.digestSend(to, mail),
+            defaultRecipient: () => this.digestDefaultRecipient(),
+        });
+    }
 
     /** Called by Nest after every provider is initialised. Safe place to
      *  start background sweepers that need DB access. The sweeper runs on
      *  the worker only (the server answers pixels and clicks). */
     onApplicationBootstrap(): void {
+        // Usage stats (30 days, numbers only) for the evaluation ping and the
+        // heartbeat — both server and worker may answer, so wire it everywhere.
+        setStatsProvider(() => this.evalStats());
+        void this.prefs.ensureTable();
+        if (this.processContext.isWorker) this.digest.start();
+
         const opts = getOptions();
         const r = opts.retention;
         if (!r || ((!r.days || r.days <= 0) && !r.maxRows)) return;
@@ -82,11 +249,139 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
     }
 
     onModuleDestroy(): void {
+        this.digest.stop();
         if (this.retentionFirst) clearTimeout(this.retentionFirst);
         if (this.retentionTimer) clearInterval(this.retentionTimer);
         this.retentionFirst = null;
         this.retentionTimer = null;
     }
+
+    // ── Usage stats, setup checklist, weekly report ───────────────────────
+
+    /** One aggregate over `email_log` for `[from, to)`. Install-wide (every
+     *  channel): these are the numbers the licence server and the weekly
+     *  report use. Fails soft to zeros. */
+    async aggregate(from: Date, to: Date): Promise<LogAggregate> {
+        try {
+            const rows = await adapterFor(this.connection.rawConnection).query(
+                `SELECT COUNT(*)                                                                AS tracked,
+                        SUM(\`openCount\`)                                                       AS opens,
+                        SUM(\`clickCount\`)                                                      AS clicks,
+                        SUM(CASE WHEN status='bounced' OR status='complained' THEN 1 ELSE 0 END) AS bounced,
+                        SUM(CASE WHEN \`openCount\` > 0 THEN 1 ELSE 0 END)                       AS opened
+                 FROM email_log
+                 WHERE \`createdAt\` >= ? AND \`createdAt\` < ?`,
+                [from, to],
+            );
+            const r = rows?.[0] || {};
+            return { tracked: Number(r.tracked) || 0, opens: Number(r.opens) || 0, clicks: Number(r.clicks) || 0, bounced: Number(r.bounced) || 0, opened: Number(r.opened) || 0 };
+        } catch (e: any) {
+            Logger.warn(`stats aggregate failed: ${e?.message}`, loggerCtx);
+            return { tracked: 0, opens: 0, clicks: 0, bounced: 0, opened: 0 };
+        }
+    }
+
+    /** Stats over the last `days` days, keyed as the licence server expects. */
+    async statsForDays(days: number): Promise<Record<string, number>> {
+        const to = new Date();
+        return statsFromAggregate(await this.aggregate(new Date(to.getTime() - days * DAY_MS), to));
+    }
+
+    /** Last 30 days — the evaluation + heartbeat stats provider. */
+    evalStats(): Promise<Record<string, number>> {
+        return this.statsForDays(30);
+    }
+
+    /** Real checks behind the set-up checklist card and the digest tips. */
+    async setupChecklist(): Promise<SetupChecklist> {
+        const opts = getOptions();
+        const db = adapterFor(this.connection.rawConnection);
+        let hasRecentLog = false;
+        let hasEngagement = false;
+        try {
+            const rows = await db.query('SELECT id FROM email_log WHERE `createdAt` >= DATE_SUB(NOW(), INTERVAL ? DAY) LIMIT 1', [30]);
+            hasRecentLog = Array.isArray(rows) && rows.length > 0;
+        } catch { /* fail-soft */ }
+        try {
+            const rows = await db.query('SELECT id FROM email_log WHERE `openCount` > 0 OR `clickCount` > 0 LIMIT 1');
+            hasEngagement = Array.isArray(rows) && rows.length > 0;
+        } catch { /* fail-soft */ }
+        return buildSetupItems({
+            hasRecentLog,
+            publicBaseUrl: opts.publicBaseUrl,
+            bounceSecretConfigured: !!(opts.bounceWebhookSecret || configuredSigningSecret()),
+            hasEngagement,
+        });
+    }
+
+    /** Where the admin page lives, for the digest and tips. */
+    adminUrl(): string | null {
+        const base = (getOptions().publicBaseUrl || '').replace(/\/$/, '');
+        return base ? `${base}/admin/extensions/${ADMIN_ROUTE}` : null;
+    }
+
+    /** Lifecycle notice + headline numbers for the licence banner and widget. */
+    licenceNotice() {
+        return licenceLifecycleNotice(describeLicence(getLicenceStatus()), getEvalState(), PLUGIN_SHORT_ID);
+    }
+
+    /** Dashboard widget payload: three 7-day figures, the notice, the route. */
+    async widgetData() {
+        const stats = await this.statsForDays(7);
+        const fmt = (key: string, label: string, format: DigestStat['format'] = 'count') =>
+            ({ label, value: formatStat({ key, label, value: stats[key] ?? 0, format }) });
+        return {
+            tier: effectiveTier(),
+            notice: this.licenceNotice(),
+            stats: [fmt('emailsTracked', 'Emails tracked'), fmt('emailOpens', 'Opens'), fmt('emailClicks', 'Clicks')],
+            route: `/extensions/${ADMIN_ROUTE}`,
+        };
+    }
+
+    private async digestCollect(from: Date, to: Date): Promise<Omit<DigestInput, 'periodStart' | 'periodEnd' | 'pluginName' | 'shortId'>> {
+        const span = to.getTime() - from.getTime();
+        const [cur, prev, checklist] = await Promise.all([
+            this.aggregate(from, to),
+            this.aggregate(new Date(from.getTime() - span), from),
+            this.setupChecklist(),
+        ]);
+        const adminUrl = this.adminUrl();
+        return {
+            stats: digestStats(statsFromAggregate(cur), statsFromAggregate(prev)),
+            tips: tipsFromChecklist(checklist, adminUrl),
+            tier: effectiveTier(),
+            licence: describeLicence(getLicenceStatus()),
+            evalState: getEvalState(),
+            adminUrl,
+            premiumFeatures: PREMIUM_FEATURES,
+            settingsHint: `Change the recipient or stop this weekly report in Admin → Email Log → Weekly report.`,
+        };
+    }
+
+    /** This package has no mailer of its own: the host's SMTP_* env is used. */
+    private async digestSend(to: string, mail: DigestMail): Promise<unknown> {
+        const transport = smtpTransportFromEnv();
+        if (!transport) throw new Error('No SMTP transport: set SMTP_SERVER (or SMTP_HOST), SMTP_USER and SMTP_PASSWORD in the host environment');
+        const from = process.env.SMTP_FROM || process.env.SMTP_USER || undefined;
+        return transport.sendMail({ ...(from ? { from } : {}), to, subject: mail.subject, text: mail.text, html: mail.html });
+    }
+
+    /** The licence's customer email, else the trial lead the admin typed. */
+    private async digestDefaultRecipient(): Promise<string | null> {
+        const customer = describeLicence(getLicenceStatus())?.customer;
+        if (customer) return customer;
+        return (await this.prefs.get('eval.leadEmail')) || null;
+    }
+
+    /** This week's report rendered for the admin preview (no send). */
+    async digestPreview(): Promise<DigestMail> {
+        const end = new Date();
+        const start = new Date(end.getTime() - 7 * DAY_MS);
+        const partial = await this.digestCollect(start, end);
+        return composeDigest({ ...partial, pluginName: PLUGIN_DISPLAY_NAME, shortId: PLUGIN_SHORT_ID, periodStart: start, periodEnd: end });
+    }
+
+    digestSettings(): Promise<WeeklyDigestSettings> { return this.digest.settings(); }
 
     /** One retention pass: `email_log` older than `days` (and beyond `maxRows`),
      *  `email_link` rows past `expiresAt` or older than `days`. */
