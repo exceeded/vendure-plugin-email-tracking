@@ -30,7 +30,7 @@
     },
     "dependencies": {
         "graphql-tag": "^2.12.7",
-        "@huloglobal/vendure-licence-sdk": "^0.15.0"
+        "@huloglobal/vendure-licence-sdk": "^0.15.1"
     },
     "peerDependencies": {
         "@nestjs/common": ">=10.0.0",
@@ -40,7 +40,7 @@
         "typeorm": ">=0.3.0"
     },
     "devDependencies": {
-        "@huloglobal/vendure-licence-sdk": "^0.15.0",
+        "@huloglobal/vendure-licence-sdk": "^0.15.1",
         "@nestjs/common": "^10.0.0",
         "@types/nodemailer": "^6.0.0",
         "@vendure/core": "^3.7.3",

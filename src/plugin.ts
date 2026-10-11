@@ -78,6 +78,17 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
 })
 export class EmailTrackingPlugin {
     private static licenceHost = '';
+    /** Key activated from the admin UI or installed by the purchase claim —
+     *  the heartbeat reports its jti (not "unlicensed") so the licence
+     *  server keeps the usage stats for the install. */
+    private static runtimeLicenceKey: string | null = null;
+    /** Key passed to `init()` (env / config). */
+    private static initLicenceKey: string | undefined;
+
+    /** The licence key currently in force, if any. */
+    static currentLicenceKey(): string | null {
+        return EmailTrackingPlugin.runtimeLicenceKey || EmailTrackingPlugin.initLicenceKey || null;
+    }
 
     /** Verify + apply a licence key at runtime (admin-UI activation). */
     static activateRuntimeLicence(key: string): LicenceStatus {
@@ -87,6 +98,7 @@ export class EmailTrackingPlugin {
         });
         if (status.valid) {
             setLicenceStatus(status);
+            EmailTrackingPlugin.runtimeLicenceKey = key;
             stopEvaluation();
         }
         return status;
@@ -98,6 +110,7 @@ export class EmailTrackingPlugin {
             valid: false,
             message: 'No licence key configured. The plugin will run in unlicensed (degraded) mode.',
         } as LicenceStatus);
+        EmailTrackingPlugin.runtimeLicenceKey = null;
         startEvaluation(PKG_NAME, PKG_VERSION);
     }
 
@@ -150,6 +163,7 @@ export class EmailTrackingPlugin {
 
     static init(options: EmailTrackingPluginOptions): Type<EmailTrackingPlugin> {
         setOptions(options);
+        EmailTrackingPlugin.initLicenceKey = options.licenceKey;
 
         // Warn if @vendure/core at runtime is outside the tested
         // range. Non-fatal — the plugin boots and works.
@@ -198,6 +212,8 @@ export class EmailTrackingPlugin {
                 packageName: PKG_NAME,
                 packageVersion: PKG_VERSION,
                 licenceKey: options.licenceKey,
+                // Live key: admin-activated / claim-installed keys replace the init one.
+                licenceKeyProvider: () => EmailTrackingPlugin.currentLicenceKey(),
                 publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY),
                 // Lazy: the service installs the real provider after bootstrap.
                 statsProvider: () => getStatsProvider()?.() ?? {},
