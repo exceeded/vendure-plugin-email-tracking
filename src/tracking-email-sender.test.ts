@@ -26,6 +26,26 @@ describe('CapturingSender', () => {
 });
 
 describe('TrackingEmailSender via the Vendure pipeline', () => {
+    it('decodes HTML entities in tracked query strings before wrapping links', () => {
+        setOptions({ publicBaseUrl: 'https://track.example.com', signingSecret: 'test-secret' });
+        const sender = new TrackingEmailSender();
+        const html = [
+            '<a href="https://elite-software.co.uk/password-reset?token&#x3D;example">reset</a>',
+            '<a href="https://shop.example.com/x?a=1&amp;b=2">shop</a>',
+        ].join('');
+
+        const rewritten = (sender as any).wrapHtml(html, 7);
+        const targets = [...rewritten.matchAll(/<a\b[^>]*\bhref="([^"]+)"/gi)]
+            .map(match => new URL(match[1]).searchParams.get('u'));
+
+        expect(targets).toEqual([
+            'https://elite-software.co.uk/password-reset?token=example',
+            'https://shop.example.com/x?a=1&b=2',
+        ]);
+        expect(new URL(targets[0]!).searchParams.get('token')).toBe('example');
+        expect(new URL(targets[1]!).searchParams.get('b')).toBe('2');
+    });
+
     it('records Message-ID (without brackets) and the SMTP response on the row after inner.send', async () => {
         setOptions({ publicBaseUrl: 'https://shop.example.com', signingSecret: 'test-secret' });
         const saved: any[] = [];

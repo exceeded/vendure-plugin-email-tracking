@@ -5,6 +5,7 @@ import { NodemailerEmailSender } from '@vendure/email-plugin/lib/src/sender/node
 import { EmailLog, EmailLogStatus } from './email-log.entity';
 import { getOptions, ownTrackingPrefixes, trackingBaseUrl } from './options';
 import { adapterFor, signValue } from '@huloglobal/vendure-licence-sdk';
+import { decodeHtmlHref } from './decode-html-href';
 
 const loggerCtx = 'TrackingEmailSender';
 
@@ -254,8 +255,10 @@ export class TrackingEmailSender implements EmailSender {
             if (/^(mailto:|tel:|#)/i.test(trimmed)) return m;
             if (ownPrefixes.some(p => trimmed.startsWith(p))) return m;
             if (/unsubscribe/i.test(trimmed) || /\bopt[-_]?out\b/i.test(trimmed)) return m;
-            // Templates emit `&amp;` inside href: decode before encoding or the target's query string breaks.
-            const target = trimmed.replace(/&amp;/g, '&').replace(/&#0*38;/g, '&').replace(/&#x0*26;/gi, '&');
+            // Templates HTML-escape query-string separators inside href attributes.
+            // Decode them before encoding the target or links such as password
+            // resets arrive without a usable token query parameter.
+            const target = decodeHtmlHref(trimmed);
             return `<a${attrs}href=${q}${base}/email-track/click/${token}?u=${encodeURIComponent(target)}${q}`;
         });
         const pixel = `<img src="${base}/email-track/open/${token}.gif" width="1" height="1" alt="" border="0" style="border:0;width:1px;height:1px;opacity:0;overflow:hidden">`;

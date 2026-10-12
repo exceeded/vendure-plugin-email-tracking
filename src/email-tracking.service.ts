@@ -11,6 +11,7 @@ import { EmailSuppression } from './email-suppression.entity';
 import { lookupGeo } from './geo-lookup';
 import { getLicenceStatus, getOptions, ownTrackingPrefixes, trackingBaseUrl, hasPremiumAccess, getEvalState, configuredSigningSecret, setStatsProvider } from './options';
 import { parseEmailClient } from './parse-ua';
+import { decodeHtmlHref } from './decode-html-href';
 
 const loggerCtx = 'EmailTrackingService';
 
@@ -534,8 +535,8 @@ export class EmailTrackingService implements OnApplicationBootstrap, OnModuleDes
             if (/^(mailto:|tel:|#)/i.test(trimmed)) return match;
             if (ownPrefixes.some(p => trimmed.startsWith(p))) return match;
             if (/unsubscribe/i.test(trimmed) || /\bopt[-_]?out\b/i.test(trimmed)) return match;
-            // Templates emit `&amp;` inside href: decode before encoding or the target's query string breaks.
-            const target = trimmed.replace(/&amp;/g, '&').replace(/&#0*38;/g, '&').replace(/&#x0*26;/gi, '&');
+            // Decode HTML-escaped query separators before encoding the target.
+            const target = decodeHtmlHref(trimmed);
             const encoded = encodeURIComponent(target);
             return `<a${attrs}href=${quote}${base}/email-track/click/${token}?u=${encoded}${quote}`;
         });

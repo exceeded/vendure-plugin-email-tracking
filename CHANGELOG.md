@@ -5,6 +5,12 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] — 2026-10-12
+
+### Fixed
+- Decode HTML-escaped equals signs as well as ampersands before wrapping tracked
+  links, so password-reset and other query-string URLs retain their parameters.
+
 ## [0.15.0] — 2026-10-11
 
 Retention pass: the plugin now tells the merchant what it did for them and
